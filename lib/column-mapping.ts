@@ -12,7 +12,6 @@ export const CSV_COLUMN_MAP: Record<string, string> = {
   "Repite Color": "repite_color",
   "Prioridad": "prioridad",
   "Video": "video",
-  "IA": "ia",
 };
 
 // Reverse mapping: DB columns -> Spanish CSV headers
@@ -50,14 +49,10 @@ export const TABLE_COLUMN_ORDER = [
   "repite_color",
   "prioridad",
   "video",
-  "ia",
   "image",
   "created_at",
   "updated_at",
 ];
-
-// Columns to exclude from CSV export (ia should not be exported)
-export const COLUMNS_EXCLUDED_FROM_EXPORT = ["ia"];
 
 // Additional display name mappings for non-CSV columns
 export const EXTRA_DISPLAY_NAMES: Record<string, string> = {

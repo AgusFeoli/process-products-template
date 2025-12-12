@@ -3,7 +3,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -431,21 +430,12 @@ export default function Home() {
                           key={col.name}
                           className="border-b border-border px-4 py-2"
                         >
-                          {col.name === "ia" ? (
-                            <BooleanCell
-                              value={row[col.name]}
-                              onSave={(newValue) =>
-                                handleCellUpdate(primaryKeyValue as string | number, col.name, newValue)
-                              }
-                            />
-                          ) : (
-                            <EditableCell
-                              value={row[col.name]}
-                              onSave={(newValue) =>
-                                handleCellUpdate(primaryKeyValue as string | number, col.name, newValue)
-                              }
-                            />
-                          )}
+                          <EditableCell
+                            value={row[col.name]}
+                            onSave={(newValue) =>
+                              handleCellUpdate(primaryKeyValue as string | number, col.name, newValue)
+                            }
+                          />
                         </td>
                       ))}
                       <td className="border-b border-border px-4 py-2">
@@ -544,28 +534,3 @@ function EditableCell({
   );
 }
 
-// Boolean cell component for 'ia' column
-function BooleanCell({
-  value,
-  onSave,
-}: {
-  value: string | number | boolean | null;
-  onSave: (value: string) => void;
-}) {
-  // Parse value to boolean
-  const boolValue = value === true || value === "true" || value === "1" || value === 1;
-
-  const handleChange = (checked: boolean) => {
-    onSave(checked ? "true" : "false");
-  };
-
-  return (
-    <div className="flex items-center justify-center">
-      <Checkbox
-        checked={boolValue}
-        onCheckedChange={handleChange}
-        className="h-5 w-5"
-      />
-    </div>
-  );
-}
