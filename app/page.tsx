@@ -3,17 +3,30 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import {
   checkConnection,
   fetchTableData,
   importCsv,
   updateCell,
   deleteRow,
+  deleteAllRows,
   exportCsv,
   type TableData,
 } from "./actions";
 import { getColumnDisplayName, TABLE_COLUMN_ORDER } from "@/lib/column-mapping";
-import { Database, Upload, RefreshCw, Download, AlertCircle, Loader2, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
+import { Database, Upload, RefreshCw, Download, AlertCircle, Loader2, ArrowUp, ArrowDown, ArrowUpDown, Trash2 } from "lucide-react";
 
 // Sort direction type
 type SortDirection = "asc" | "desc" | null;
@@ -23,6 +36,7 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
+  const [isDeletingAll, setIsDeletingAll] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<{
     connected: boolean;
     tableExists: boolean;
@@ -143,7 +157,24 @@ export default function Home() {
 
   const handleRefresh = async () => {
     await loadData();
-    toast.success("Data refreshed");
+    toast.success("Datos actualizados");
+  };
+
+  const handleDeleteAll = async () => {
+    setIsDeletingAll(true);
+    try {
+      const result = await deleteAllRows();
+      if (result.success) {
+        toast.success(`Se eliminaron ${result.deletedCount} filas`);
+        await loadData();
+      } else {
+        toast.error(result.error || "Error al eliminar las filas");
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Error al eliminar las filas");
+    } finally {
+      setIsDeletingAll(false);
+    }
   };
 
   const handleImportClick = () => {
@@ -161,16 +192,16 @@ export default function Home() {
     try {
       const result = await importCsv(formData);
       if (result.success) {
-        toast.success(`Imported ${result.inserted} products`);
+        toast.success(`Se importaron ${result.inserted} productos`);
         if (result.errors && result.errors.length > 0) {
-          toast.warning(`${result.errors.length} rows had errors`);
+          toast.warning(`${result.errors.length} filas tuvieron errores`);
         }
         await loadData();
       } else {
-        toast.error(result.error || "Import failed");
+        toast.error(result.error || "Error en la importacion");
       }
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Import failed");
+      toast.error(err instanceof Error ? err.message : "Error en la importacion");
     } finally {
       setIsImporting(false);
       // Reset input
@@ -192,9 +223,9 @@ export default function Home() {
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
-      toast.success("Exported successfully");
+      toast.success("Exportado exitosamente");
     } else {
-      toast.error(result.error || "Export failed");
+      toast.error(result.error || "Error en la exportacion");
     }
   };
 
@@ -205,17 +236,17 @@ export default function Home() {
   ) => {
     const result = await updateCell(primaryKeyValue, columnName, value);
     if (!result.success) {
-      toast.error(result.error || "Failed to update");
+      toast.error(result.error || "Error al actualizar");
     }
   };
 
   const handleDeleteRow = async (primaryKeyValue: string | number) => {
     const result = await deleteRow(primaryKeyValue);
     if (result.success) {
-      toast.success("Row deleted");
+      toast.success("Fila eliminada");
       await loadData();
     } else {
-      toast.error(result.error || "Failed to delete");
+      toast.error(result.error || "Error al eliminar");
     }
   };
 
@@ -225,7 +256,7 @@ export default function Home() {
       <div className="h-screen bg-background flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">
           <Loader2 className="h-10 w-10 text-primary animate-spin" />
-          <p className="text-muted-foreground">Connecting to database...</p>
+          <p className="text-muted-foreground">Conectando a la base de datos...</p>
         </div>
       </div>
     );
@@ -237,7 +268,7 @@ export default function Home() {
       <div className="h-screen bg-background flex items-center justify-center">
         <div className="flex flex-col items-center gap-4 max-w-md text-center px-4">
           <AlertCircle className="h-12 w-12 text-destructive" />
-          <h2 className="text-xl font-semibold">Connection Error</h2>
+          <h2 className="text-xl font-semibold">Error de Conexion</h2>
           <p className="text-muted-foreground">{error}</p>
           <div className="bg-muted p-4 rounded-lg text-left w-full">
             <p className="text-sm font-mono text-muted-foreground">
@@ -248,7 +279,7 @@ export default function Home() {
           </div>
           <Button onClick={() => window.location.reload()} variant="outline">
             <RefreshCw className="h-4 w-4 mr-2" />
-            Retry
+            Reintentar
           </Button>
         </div>
       </div>
@@ -271,9 +302,9 @@ export default function Home() {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Database className="h-5 w-5 text-primary" />
-            <span className="font-semibold">{tableData?.tableName || "Products"}</span>
+            <span className="font-semibold">{tableData?.tableName || "Productos"}</span>
             <span className="text-sm text-muted-foreground">
-              {tableData?.rows.length || 0} rows
+              {tableData?.rows.length || 0} filas
             </span>
           </div>
 
@@ -289,8 +320,43 @@ export default function Home() {
               ) : (
                 <Upload className="h-4 w-4" />
               )}
-              <span className="ml-2">Import Products</span>
+              <span className="ml-2">Importar</span>
             </Button>
+
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={isDeletingAll || !tableData?.rows.length}
+                  className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                >
+                  {isDeletingAll ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Trash2 className="h-4 w-4" />
+                  )}
+                  <span className="ml-2">Eliminar Todo</span>
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Eliminar todas las filas</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    Esta accion eliminara permanentemente todas las {tableData?.rows.length || 0} filas de la tabla. Esta accion no se puede deshacer.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                  <AlertDialogAction
+                    onClick={handleDeleteAll}
+                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  >
+                    Eliminar Todo
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
 
             <Button
               variant="outline"
@@ -299,12 +365,12 @@ export default function Home() {
               disabled={isRefreshing}
             >
               <RefreshCw className={`h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
-              <span className="ml-2">Refresh</span>
+              <span className="ml-2">Actualizar</span>
             </Button>
 
             <Button variant="outline" size="sm" onClick={handleExport}>
               <Download className="h-4 w-4" />
-              <span className="ml-2">Export</span>
+              <span className="ml-2">Exportar</span>
             </Button>
           </div>
         </div>
@@ -345,7 +411,7 @@ export default function Home() {
                     );
                   })}
                   <th className="border-b border-border px-4 py-3 text-left font-medium w-20">
-                    Actions
+                    Acciones
                   </th>
                 </tr>
               </thead>
@@ -365,12 +431,21 @@ export default function Home() {
                           key={col.name}
                           className="border-b border-border px-4 py-2"
                         >
-                          <EditableCell
-                            value={row[col.name]}
-                            onSave={(newValue) =>
-                              handleCellUpdate(primaryKeyValue as string | number, col.name, newValue)
-                            }
-                          />
+                          {col.name === "ia" ? (
+                            <BooleanCell
+                              value={row[col.name]}
+                              onSave={(newValue) =>
+                                handleCellUpdate(primaryKeyValue as string | number, col.name, newValue)
+                              }
+                            />
+                          ) : (
+                            <EditableCell
+                              value={row[col.name]}
+                              onSave={(newValue) =>
+                                handleCellUpdate(primaryKeyValue as string | number, col.name, newValue)
+                              }
+                            />
+                          )}
                         </td>
                       ))}
                       <td className="border-b border-border px-4 py-2">
@@ -380,7 +455,7 @@ export default function Home() {
                           className="text-destructive hover:text-destructive hover:bg-destructive/10"
                           onClick={() => handleDeleteRow(primaryKeyValue as string | number)}
                         >
-                          Delete
+                          Eliminar
                         </Button>
                       </td>
                     </tr>
@@ -391,13 +466,13 @@ export default function Home() {
 
             {tableData.rows.length === 0 && (
               <div className="flex items-center justify-center h-64 text-muted-foreground">
-                No data in table. Import a CSV to add products.
+                No hay datos en la tabla. Importa un CSV para agregar productos.
               </div>
             )}
           </div>
         ) : (
           <div className="flex items-center justify-center h-full text-muted-foreground">
-            No columns found in table.
+            No se encontraron columnas en la tabla.
           </div>
         )}
       </main>
@@ -465,6 +540,32 @@ function EditableCell({
       ) : (
         String(value)
       )}
+    </div>
+  );
+}
+
+// Boolean cell component for 'ia' column
+function BooleanCell({
+  value,
+  onSave,
+}: {
+  value: string | number | boolean | null;
+  onSave: (value: string) => void;
+}) {
+  // Parse value to boolean
+  const boolValue = value === true || value === "true" || value === "1" || value === 1;
+
+  const handleChange = (checked: boolean) => {
+    onSave(checked ? "true" : "false");
+  };
+
+  return (
+    <div className="flex items-center justify-center">
+      <Checkbox
+        checked={boolValue}
+        onCheckedChange={handleChange}
+        className="h-5 w-5"
+      />
     </div>
   );
 }

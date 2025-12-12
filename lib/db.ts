@@ -164,6 +164,18 @@ export async function deleteRow(primaryKeyValue: string | number): Promise<void>
   await sql(query, [primaryKeyValue]);
 }
 
+// Delete all rows
+export async function deleteAllRows(): Promise<{ deletedCount: number }> {
+  // First get the count
+  const countResult = await sql(`SELECT COUNT(*) as count FROM "${TARGET_TABLE}"`);
+  const count = Number(countResult[0]?.count || 0);
+
+  // Delete all rows
+  await sql(`DELETE FROM "${TARGET_TABLE}"`);
+
+  return { deletedCount: count };
+}
+
 // Add a new empty row
 export async function addRow(): Promise<TableRow> {
   // Insert with default values and return the new row
