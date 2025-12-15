@@ -2,7 +2,18 @@ import { NextResponse } from "next/server";
 import { neon } from "@neondatabase/serverless";
 import { listAllSftpImagesForIndexing, type ImageFile } from "@/lib/ftp-service";
 
-const sql = neon(process.env.DATABASE_URL!);
+// Force dynamic rendering - don't analyze during build
+export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
+
+// Lazy initialization to avoid issues during build
+function getSql() {
+  if (!process.env.DATABASE_URL) {
+    throw new Error("DATABASE_URL is not set");
+  }
+  return neon(process.env.DATABASE_URL);
+}
+
 const BATCH_SIZE = 1000; // Insert 1000 images per query
 
 // State for tracking indexing progress
@@ -21,6 +32,7 @@ export async function GET() {
   // Also get current DB count
   let dbCount = 0;
   try {
+    const sql = getSql();
     const result = await sql`SELECT COUNT(*) as count FROM sftp_images`;
     dbCount = Number(result[0]?.count || 0);
   } catch {
@@ -129,6 +141,7 @@ async function upsertBatchOptimized(
   }
 
   // Single query to upsert all images in the batch
+  const sql = getSql();
   await sql`
     INSERT INTO sftp_images (path, name, name_lower, size, modify_time, seen_at)
     SELECT * FROM UNNEST(

@@ -4,7 +4,18 @@ import { downloadImageFromSftp } from "@/lib/ftp-service";
 import { resolveProductImage } from "@/lib/image-matcher";
 import { generateProductDescription, type ProductData } from "@/lib/ai-service";
 
-const sql = neon(process.env.DATABASE_URL!);
+// Force dynamic rendering - don't analyze during build
+export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
+
+// Lazy initialization to avoid issues during build
+function getSql() {
+  if (!process.env.DATABASE_URL) {
+    throw new Error("DATABASE_URL is not set");
+  }
+  return neon(process.env.DATABASE_URL);
+}
+
 const TARGET_TABLE = process.env.TARGET_TABLE || "products";
 const BATCH_SIZE = 50;
 const AI_VERSION = "2.0"; // Increment when prompt/model changes
@@ -96,6 +107,8 @@ export async function POST(request: NextRequest) {
 // Main processing function
 async function processAllBatches() {
   try {
+    const sql = getSql();
+    
     // Get total count of products to process (ia = false or ia IS NULL)
     const countResult = await sql(
       `SELECT COUNT(*) as count FROM "${TARGET_TABLE}" WHERE ia IS NULL OR ia = false`
@@ -223,6 +236,7 @@ async function processProduct(
 
   // 6. Update product in database
   const now = new Date().toISOString();
+  const sql = getSql();
 
   if (imagePath) {
     await sql(
@@ -257,6 +271,7 @@ async function checkIfShouldSkip(
   productUpdatedAt: string | null
 ): Promise<boolean> {
   try {
+    const sql = getSql();
     const cached = await sql`
       SELECT 
         ai_version,
@@ -302,6 +317,7 @@ async function updateAiCache(
   imageModifyTime: Date | null
 ): Promise<void> {
   try {
+    const sql = getSql();
     const now = new Date().toISOString();
     
     await sql`
