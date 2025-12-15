@@ -1,6 +1,12 @@
 import { neon } from "@neondatabase/serverless";
 
-const sql = neon(process.env.DATABASE_URL!);
+// Lazy initialization to avoid issues during build
+function getSql() {
+  if (!process.env.DATABASE_URL) {
+    throw new Error("DATABASE_URL is not set");
+  }
+  return neon(process.env.DATABASE_URL);
+}
 
 export interface MatchedImage {
   id: number;
@@ -40,6 +46,7 @@ export async function findBestImageForModelo(
   const modeloLower = modelo.toLowerCase().trim();
   
   try {
+    const sql = getSql();
     // Search for images that contain the modelo in their name
     // Using pg_trgm index for fast ILIKE
     const candidates = await sql`
@@ -122,6 +129,7 @@ export async function getCachedProductImage(
   productId: number
 ): Promise<ProductImageMatch | null> {
   try {
+    const sql = getSql();
     const result = await sql`
       SELECT 
         product_id,
@@ -162,6 +170,7 @@ export async function saveProductImageMatch(
   match: MatchedImage
 ): Promise<void> {
   try {
+    const sql = getSql();
     await sql`
       INSERT INTO product_images (
         product_id, 
@@ -228,6 +237,7 @@ export async function resolveProductImage(
  */
 export async function clearProductImageCache(productId: number): Promise<void> {
   try {
+    const sql = getSql();
     await sql`DELETE FROM product_images WHERE product_id = ${productId}`;
   } catch (error) {
     console.error(`Error clearing image cache for product ${productId}:`, error);
@@ -243,6 +253,7 @@ export async function getImageMatchingStats(): Promise<{
   unmatchedProducts: number;
 }> {
   try {
+    const sql = getSql();
     const [imagesResult, matchedResult] = await Promise.all([
       sql`SELECT COUNT(*) as count FROM sftp_images`,
       sql`SELECT COUNT(DISTINCT product_id) as count FROM product_images`,
