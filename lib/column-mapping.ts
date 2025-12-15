@@ -12,6 +12,8 @@ export const CSV_COLUMN_MAP: Record<string, string> = {
   "Repite Color": "repite_color",
   "Prioridad": "prioridad",
   "Video": "video",
+  "Imagen": "imagen",
+  "IA": "ia",
 };
 
 // Reverse mapping: DB columns -> Spanish CSV headers
@@ -49,6 +51,8 @@ export const TABLE_COLUMN_ORDER = [
   "repite_color",
   "prioridad",
   "video",
+  "imagen",
+  "ia",
   "image",
   "created_at",
   "updated_at",

@@ -4,16 +4,29 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import {
   checkConnection,
   fetchTableData,
   importCsv,
   updateCell,
   deleteRow,
+  deleteAllRows,
   exportCsv,
   type TableData,
 } from "./actions";
 import { getColumnDisplayName, TABLE_COLUMN_ORDER } from "@/lib/column-mapping";
-import { Database, Upload, RefreshCw, Download, AlertCircle, Loader2, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
+import { Progress } from "@/components/ui/progress";
+import { Database, Upload, RefreshCw, Download, AlertCircle, Loader2, ArrowUp, ArrowDown, ArrowUpDown, Trash2, Sparkles, Square, FolderSync, Image } from "lucide-react";
 
 // Sort direction type
 type SortDirection = "asc" | "desc" | null;
@@ -23,6 +36,7 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
+  const [isDeletingAll, setIsDeletingAll] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<{
     connected: boolean;
     tableExists: boolean;
@@ -30,6 +44,25 @@ export default function Home() {
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // AI Processing state
+  const [isProcessingAI, setIsProcessingAI] = useState(false);
+  const [processingStats, setProcessingStats] = useState<{
+    total: number;
+    processed: number;
+    success: number;
+    errors: number;
+    skipped?: number;
+    currentBatch: number;
+    totalBatches: number;
+    lastError: string;
+    withImage?: number;
+    withoutImage?: number;
+  } | null>(null);
+
+  // Image indexing state
+  const [isIndexing, setIsIndexing] = useState(false);
+  const [indexedImageCount, setIndexedImageCount] = useState<number>(0);
 
   // Sorting state
   const [sortColumn, setSortColumn] = useState<string | null>(null);
@@ -143,7 +176,24 @@ export default function Home() {
 
   const handleRefresh = async () => {
     await loadData();
-    toast.success("Data refreshed");
+    toast.success("Datos actualizados");
+  };
+
+  const handleDeleteAll = async () => {
+    setIsDeletingAll(true);
+    try {
+      const result = await deleteAllRows();
+      if (result.success) {
+        toast.success(`Se eliminaron ${result.deletedCount} filas`);
+        await loadData();
+      } else {
+        toast.error(result.error || "Error al eliminar las filas");
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Error al eliminar las filas");
+    } finally {
+      setIsDeletingAll(false);
+    }
   };
 
   const handleImportClick = () => {
@@ -161,16 +211,16 @@ export default function Home() {
     try {
       const result = await importCsv(formData);
       if (result.success) {
-        toast.success(`Imported ${result.inserted} products`);
+        toast.success(`Se importaron ${result.inserted} productos`);
         if (result.errors && result.errors.length > 0) {
-          toast.warning(`${result.errors.length} rows had errors`);
+          toast.warning(`${result.errors.length} filas tuvieron errores`);
         }
         await loadData();
       } else {
-        toast.error(result.error || "Import failed");
+        toast.error(result.error || "Error en la importacion");
       }
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Import failed");
+      toast.error(err instanceof Error ? err.message : "Error en la importacion");
     } finally {
       setIsImporting(false);
       // Reset input
@@ -192,9 +242,9 @@ export default function Home() {
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
-      toast.success("Exported successfully");
+      toast.success("Exportado exitosamente");
     } else {
-      toast.error(result.error || "Export failed");
+      toast.error(result.error || "Error en la exportacion");
     }
   };
 
@@ -205,17 +255,131 @@ export default function Home() {
   ) => {
     const result = await updateCell(primaryKeyValue, columnName, value);
     if (!result.success) {
-      toast.error(result.error || "Failed to update");
+      toast.error(result.error || "Error al actualizar");
     }
   };
 
   const handleDeleteRow = async (primaryKeyValue: string | number) => {
     const result = await deleteRow(primaryKeyValue);
     if (result.success) {
-      toast.success("Row deleted");
+      toast.success("Fila eliminada");
       await loadData();
     } else {
-      toast.error(result.error || "Failed to delete");
+      toast.error(result.error || "Error al eliminar");
+    }
+  };
+
+  // Fetch indexed image count on load
+  useEffect(() => {
+    const fetchIndexedCount = async () => {
+      try {
+        const response = await fetch("/api/index-images");
+        const data = await response.json();
+        setIndexedImageCount(data.dbCount || 0);
+      } catch {
+        // Ignore errors
+      }
+    };
+    fetchIndexedCount();
+  }, []);
+
+  // Image indexing handler
+  const handleStartIndexing = async () => {
+    setIsIndexing(true);
+    try {
+      const response = await fetch("/api/index-images", { method: "POST" });
+      const data = await response.json();
+
+      if (data.success) {
+        toast.success("Indexado de imágenes iniciado");
+
+        // Poll for completion
+        const pollInterval = setInterval(async () => {
+          const statusRes = await fetch("/api/index-images");
+          const statusData = await statusRes.json();
+          setIndexedImageCount(statusData.dbCount || 0);
+
+          if (!statusData.isIndexing) {
+            clearInterval(pollInterval);
+            setIsIndexing(false);
+            toast.success(`Indexado completado: ${statusData.dbCount} imágenes`);
+          }
+        }, 3000);
+      } else {
+        toast.error(data.message || "Error al iniciar indexado");
+        setIsIndexing(false);
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Error al indexar");
+      setIsIndexing(false);
+    }
+  };
+
+  // AI Processing handlers
+  const pollProcessingStatus = useCallback(async () => {
+    try {
+      const response = await fetch("/api/process", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "status" }),
+      });
+      const data = await response.json();
+      setProcessingStats(data.stats);
+      return data.isProcessing;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const handleStartProcessing = async () => {
+    setIsProcessingAI(true);
+    try {
+      const response = await fetch("/api/process", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "start" }),
+      });
+      const data = await response.json();
+
+      if (data.success) {
+        toast.success("Procesamiento IA iniciado");
+
+        // Start polling for status
+        const pollInterval = setInterval(async () => {
+          const stillProcessing = await pollProcessingStatus();
+          if (!stillProcessing) {
+            clearInterval(pollInterval);
+            setIsProcessingAI(false);
+            await loadData();
+            toast.success("Procesamiento IA completado");
+          }
+        }, 2000);
+      } else {
+        toast.error(data.message || "Error al iniciar procesamiento");
+        setIsProcessingAI(false);
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Error al iniciar procesamiento");
+      setIsProcessingAI(false);
+    }
+  };
+
+  const handleStopProcessing = async () => {
+    try {
+      const response = await fetch("/api/process", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "stop" }),
+      });
+      const data = await response.json();
+
+      if (data.success) {
+        toast.success("Procesamiento detenido");
+        setIsProcessingAI(false);
+        await loadData();
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Error al detener procesamiento");
     }
   };
 
@@ -225,7 +389,7 @@ export default function Home() {
       <div className="h-screen bg-background flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">
           <Loader2 className="h-10 w-10 text-primary animate-spin" />
-          <p className="text-muted-foreground">Connecting to database...</p>
+          <p className="text-muted-foreground">Conectando a la base de datos...</p>
         </div>
       </div>
     );
@@ -237,7 +401,7 @@ export default function Home() {
       <div className="h-screen bg-background flex items-center justify-center">
         <div className="flex flex-col items-center gap-4 max-w-md text-center px-4">
           <AlertCircle className="h-12 w-12 text-destructive" />
-          <h2 className="text-xl font-semibold">Connection Error</h2>
+          <h2 className="text-xl font-semibold">Error de Conexion</h2>
           <p className="text-muted-foreground">{error}</p>
           <div className="bg-muted p-4 rounded-lg text-left w-full">
             <p className="text-sm font-mono text-muted-foreground">
@@ -248,7 +412,7 @@ export default function Home() {
           </div>
           <Button onClick={() => window.location.reload()} variant="outline">
             <RefreshCw className="h-4 w-4 mr-2" />
-            Retry
+            Reintentar
           </Button>
         </div>
       </div>
@@ -271,9 +435,9 @@ export default function Home() {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Database className="h-5 w-5 text-primary" />
-            <span className="font-semibold">{tableData?.tableName || "Products"}</span>
+            <span className="font-semibold">{tableData?.tableName || "Productos"}</span>
             <span className="text-sm text-muted-foreground">
-              {tableData?.rows.length || 0} rows
+              {tableData?.rows.length || 0} filas
             </span>
           </div>
 
@@ -289,8 +453,43 @@ export default function Home() {
               ) : (
                 <Upload className="h-4 w-4" />
               )}
-              <span className="ml-2">Import Products</span>
+              <span className="ml-2">Importar</span>
             </Button>
+
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={isDeletingAll || !tableData?.rows.length}
+                  className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                >
+                  {isDeletingAll ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Trash2 className="h-4 w-4" />
+                  )}
+                  <span className="ml-2">Eliminar Todo</span>
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Eliminar todas las filas</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    Esta accion eliminara permanentemente todas las {tableData?.rows.length || 0} filas de la tabla. Esta accion no se puede deshacer.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                  <AlertDialogAction
+                    onClick={handleDeleteAll}
+                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  >
+                    Eliminar Todo
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
 
             <Button
               variant="outline"
@@ -299,15 +498,102 @@ export default function Home() {
               disabled={isRefreshing}
             >
               <RefreshCw className={`h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
-              <span className="ml-2">Refresh</span>
+              <span className="ml-2">Actualizar</span>
             </Button>
 
             <Button variant="outline" size="sm" onClick={handleExport}>
               <Download className="h-4 w-4" />
-              <span className="ml-2">Export</span>
+              <span className="ml-2">Exportar</span>
             </Button>
+
+            {/* Image Indexing Button */}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleStartIndexing}
+              disabled={isIndexing}
+              className="text-cyan-600 hover:text-cyan-700 hover:bg-cyan-50"
+            >
+              {isIndexing ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <FolderSync className="h-4 w-4" />
+              )}
+              <span className="ml-2">
+                {isIndexing ? "Indexando..." : `Indexar (${indexedImageCount})`}
+              </span>
+            </Button>
+
+            {/* AI Processing Button */}
+            {isProcessingAI ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleStopProcessing}
+                className="text-amber-600 hover:text-amber-700 hover:bg-amber-50"
+              >
+                <Square className="h-4 w-4" />
+                <span className="ml-2">Detener IA</span>
+              </Button>
+            ) : (
+              <Button
+                variant="default"
+                size="sm"
+                onClick={handleStartProcessing}
+                disabled={!tableData?.rows.length}
+                className="bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700"
+              >
+                <Sparkles className="h-4 w-4" />
+                <span className="ml-2">Procesar IA</span>
+              </Button>
+            )}
           </div>
         </div>
+
+        {/* AI Processing Progress Bar */}
+        {isProcessingAI && processingStats && (
+          <div className="mt-3 p-3 bg-muted/50 rounded-lg border border-border">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <Loader2 className="h-4 w-4 animate-spin text-violet-600" />
+                <span className="text-sm font-medium">
+                  Procesando con IA... Lote {processingStats.currentBatch} de {processingStats.totalBatches}
+                </span>
+              </div>
+              <span className="text-sm text-muted-foreground">
+                {processingStats.processed} / {processingStats.total} productos
+              </span>
+            </div>
+            <Progress
+              value={processingStats.total > 0 ? (processingStats.processed / processingStats.total) * 100 : 0}
+              className="h-2"
+            />
+            <div className="flex items-center justify-between mt-2 text-xs text-muted-foreground">
+              <div className="flex items-center gap-3">
+                <span className="text-green-600">Exitosos: {processingStats.success}</span>
+                {(processingStats.withImage ?? 0) > 0 && (
+                  <span className="text-cyan-600 flex items-center gap-1">
+                    <Image className="h-3 w-3" />
+                    {processingStats.withImage}
+                  </span>
+                )}
+                {(processingStats.skipped ?? 0) > 0 && (
+                  <span className="text-gray-500">Omitidos: {processingStats.skipped}</span>
+                )}
+              </div>
+              <div className="flex items-center gap-3">
+                {processingStats.errors > 0 && (
+                  <span className="text-red-600">Errores: {processingStats.errors}</span>
+                )}
+                {processingStats.lastError && (
+                  <span className="text-red-500 truncate max-w-[200px]" title={processingStats.lastError}>
+                    Ultimo error: {processingStats.lastError}
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </header>
 
       {/* Full-screen Table */}
@@ -345,7 +631,7 @@ export default function Home() {
                     );
                   })}
                   <th className="border-b border-border px-4 py-3 text-left font-medium w-20">
-                    Actions
+                    Acciones
                   </th>
                 </tr>
               </thead>
@@ -380,7 +666,7 @@ export default function Home() {
                           className="text-destructive hover:text-destructive hover:bg-destructive/10"
                           onClick={() => handleDeleteRow(primaryKeyValue as string | number)}
                         >
-                          Delete
+                          Eliminar
                         </Button>
                       </td>
                     </tr>
@@ -391,13 +677,13 @@ export default function Home() {
 
             {tableData.rows.length === 0 && (
               <div className="flex items-center justify-center h-64 text-muted-foreground">
-                No data in table. Import a CSV to add products.
+                No hay datos en la tabla. Importa un CSV para agregar productos.
               </div>
             )}
           </div>
         ) : (
           <div className="flex items-center justify-center h-full text-muted-foreground">
-            No columns found in table.
+            No se encontraron columnas en la tabla.
           </div>
         )}
       </main>
@@ -468,3 +754,4 @@ function EditableCell({
     </div>
   );
 }
+
