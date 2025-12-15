@@ -2,6 +2,9 @@
   "blocks": [
     {
       "id": "database"
+    },
+    {
+      "id": "ai-sdk"
     }
   ]
 }

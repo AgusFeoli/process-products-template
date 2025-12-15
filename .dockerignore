@@ -1,0 +1,48 @@
+# Dependencies
+node_modules
+npm-debug.log*
+
+# Next.js build output
+.next
+out
+
+# Production
+build
+
+# Debug
+*.log
+
+# Environment files (build with --build-arg or runtime env)
+.env
+.env.local
+.env.development
+.env.production
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git
+.gitignore
+
+# Docker
+Dockerfile*
+docker-compose*
+.docker
+
+# Documentation
+*.md
+!README.md
+
+# Tests
+__tests__
+*.test.*
+*.spec.*
+coverage

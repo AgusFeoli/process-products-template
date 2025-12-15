@@ -6,6 +6,7 @@ import {
   insertRows,
   updateCell as updateCellFromDb,
   deleteRow as deleteRowFromDb,
+  deleteAllRows as deleteAllRowsFromDb,
   type TableData,
   type TableColumn,
 } from "@/lib/db";
@@ -173,6 +174,20 @@ export async function deleteRow(
     return {
       success: false,
       error: error instanceof Error ? error.message : "Failed to delete row",
+    };
+  }
+}
+
+// Delete all rows
+export async function deleteAllRows(): Promise<{ success: boolean; deletedCount?: number; error?: string }> {
+  try {
+    const result = await deleteAllRowsFromDb();
+    return { success: true, deletedCount: result.deletedCount };
+  } catch (error) {
+    console.error("Delete all rows error:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to delete all rows",
     };
   }
 }
