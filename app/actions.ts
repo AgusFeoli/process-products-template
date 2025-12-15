@@ -10,7 +10,7 @@ import {
   type TableData,
   type TableColumn,
 } from "@/lib/db";
-import { CSV_COLUMN_MAP, CSV_EXPORT_ORDER, COLUMNS_EXCLUDED_FROM_EXPORT } from "@/lib/column-mapping";
+import { CSV_COLUMN_MAP, CSV_EXPORT_ORDER } from "@/lib/column-mapping";
 
 // Re-export types for components
 export type { TableData, TableColumn };

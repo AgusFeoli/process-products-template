@@ -25,7 +25,8 @@ import {
   type TableData,
 } from "./actions";
 import { getColumnDisplayName, TABLE_COLUMN_ORDER } from "@/lib/column-mapping";
-import { Database, Upload, RefreshCw, Download, AlertCircle, Loader2, ArrowUp, ArrowDown, ArrowUpDown, Trash2 } from "lucide-react";
+import { Progress } from "@/components/ui/progress";
+import { Database, Upload, RefreshCw, Download, AlertCircle, Loader2, ArrowUp, ArrowDown, ArrowUpDown, Trash2, Sparkles, Square } from "lucide-react";
 
 // Sort direction type
 type SortDirection = "asc" | "desc" | null;
@@ -43,6 +44,18 @@ export default function Home() {
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // AI Processing state
+  const [isProcessingAI, setIsProcessingAI] = useState(false);
+  const [processingStats, setProcessingStats] = useState<{
+    total: number;
+    processed: number;
+    success: number;
+    errors: number;
+    currentBatch: number;
+    totalBatches: number;
+    lastError: string;
+  } | null>(null);
 
   // Sorting state
   const [sortColumn, setSortColumn] = useState<string | null>(null);
@@ -249,6 +262,74 @@ export default function Home() {
     }
   };
 
+  // AI Processing handlers
+  const pollProcessingStatus = useCallback(async () => {
+    try {
+      const response = await fetch("/api/process", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "status" }),
+      });
+      const data = await response.json();
+      setProcessingStats(data.stats);
+      return data.isProcessing;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const handleStartProcessing = async () => {
+    setIsProcessingAI(true);
+    try {
+      const response = await fetch("/api/process", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "start" }),
+      });
+      const data = await response.json();
+
+      if (data.success) {
+        toast.success("Procesamiento IA iniciado");
+
+        // Start polling for status
+        const pollInterval = setInterval(async () => {
+          const stillProcessing = await pollProcessingStatus();
+          if (!stillProcessing) {
+            clearInterval(pollInterval);
+            setIsProcessingAI(false);
+            await loadData();
+            toast.success("Procesamiento IA completado");
+          }
+        }, 2000);
+      } else {
+        toast.error(data.message || "Error al iniciar procesamiento");
+        setIsProcessingAI(false);
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Error al iniciar procesamiento");
+      setIsProcessingAI(false);
+    }
+  };
+
+  const handleStopProcessing = async () => {
+    try {
+      const response = await fetch("/api/process", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "stop" }),
+      });
+      const data = await response.json();
+
+      if (data.success) {
+        toast.success("Procesamiento detenido");
+        setIsProcessingAI(false);
+        await loadData();
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Error al detener procesamiento");
+    }
+  };
+
   // Loading state
   if (isLoading) {
     return (
@@ -371,8 +452,64 @@ export default function Home() {
               <Download className="h-4 w-4" />
               <span className="ml-2">Exportar</span>
             </Button>
+
+            {/* AI Processing Button */}
+            {isProcessingAI ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleStopProcessing}
+                className="text-amber-600 hover:text-amber-700 hover:bg-amber-50"
+              >
+                <Square className="h-4 w-4" />
+                <span className="ml-2">Detener IA</span>
+              </Button>
+            ) : (
+              <Button
+                variant="default"
+                size="sm"
+                onClick={handleStartProcessing}
+                disabled={!tableData?.rows.length}
+                className="bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700"
+              >
+                <Sparkles className="h-4 w-4" />
+                <span className="ml-2">Procesar IA</span>
+              </Button>
+            )}
           </div>
         </div>
+
+        {/* AI Processing Progress Bar */}
+        {isProcessingAI && processingStats && (
+          <div className="mt-3 p-3 bg-muted/50 rounded-lg border border-border">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <Loader2 className="h-4 w-4 animate-spin text-violet-600" />
+                <span className="text-sm font-medium">
+                  Procesando con IA... Lote {processingStats.currentBatch} de {processingStats.totalBatches}
+                </span>
+              </div>
+              <span className="text-sm text-muted-foreground">
+                {processingStats.processed} / {processingStats.total} productos
+              </span>
+            </div>
+            <Progress
+              value={processingStats.total > 0 ? (processingStats.processed / processingStats.total) * 100 : 0}
+              className="h-2"
+            />
+            <div className="flex items-center justify-between mt-2 text-xs text-muted-foreground">
+              <span className="text-green-600">Exitosos: {processingStats.success}</span>
+              {processingStats.errors > 0 && (
+                <span className="text-red-600">Errores: {processingStats.errors}</span>
+              )}
+              {processingStats.lastError && (
+                <span className="text-red-500 truncate max-w-[200px]" title={processingStats.lastError}>
+                  Ultimo error: {processingStats.lastError}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
       </header>
 
       {/* Full-screen Table */}
