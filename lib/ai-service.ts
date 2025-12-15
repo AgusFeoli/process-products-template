@@ -31,15 +31,14 @@ function getModelName(): string {
   return model === "auto" ? "gpt-4o-mini" : model;
 }
 
-// Generate e-commerce product description using AI
-export async function generateProductDescription(
-  product: ProductData,
-  imageUrl?: string
-): Promise<string> {
-  const client = getAIClient();
-  const model = client.chat(getModelName());
+// Get vision model name (may differ from text model)
+function getVisionModelName(): string {
+  const model = process.env.VISION_MODEL_NAME || process.env.MODEL_NAME || "auto";
+  return model === "auto" ? "gpt-4o-mini" : model;
+}
 
-  // Build product context
+// Build the product context string
+function buildProductContext(product: ProductData): string {
   const productInfo: string[] = [];
 
   if (product.proveedor) {
@@ -70,33 +69,70 @@ export async function generateProductDescription(
     productInfo.push(`Color: ${product.repite_color}`);
   }
 
-  const productContext = productInfo.join("\n");
+  return productInfo.join("\n");
+}
 
-  // Build the prompt
-  const prompt = `Eres un experto copywriter para e-commerce de moda y productos de lujo. Genera una descripcion de producto atractiva y profesional para una tienda online.
+// Build the base prompt
+function buildPrompt(productContext: string, hasImage: boolean): string {
+  const imageInstruction = hasImage
+    ? `
+IMPORTANTE - ANÁLISIS DE IMAGEN:
+- Analizá la imagen del producto para extraer detalles visuales
+- Describí el estilo, color, textura, y características visibles
+- Usá la imagen para enriquecer la descripción con detalles que solo se ven en la foto
+`
+    : "";
 
-INFORMACION DEL PRODUCTO:
+  return `Eres un especialista experto en redacción de productos para e-commerce. Generá una descripción de producto convincente y atractiva.
+
+IMPORTANTE - IDIOMA Y ESTILO:
+- Todo el contenido debe estar en ESPAÑOL LATINO RIOPLATENSE (estilo Argentina/Uruguay - Cono Sur)
+- Usá el voseo: "vos" en lugar de "tú" (ej: "llevate", "descubrí", "sumá", "elegí", "no te pierdas")
+- Usá expresiones naturales del Río de la Plata
+- Esta es una marca uruguaya que busca atraer clientas con productos EXCLUSIVOS y ORIGINALES
+- Los CTAs deben transmitir urgencia y exclusividad
+${imageInstruction}
+DATOS DEL PRODUCTO:
 ${productContext}
 
 INSTRUCCIONES:
-1. Escribe una descripcion de 2-3 parrafos cortos (maximo 150 palabras total)
-2. Usa un tono elegante y aspiracional
-3. Destaca los beneficios y caracteristicas principales
-4. Si hay informacion de materiales/composicion, mencionala de forma atractiva
-5. Si el producto esta en oferta u outlet, no lo menciones en la descripcion (eso se muestra aparte)
-6. Si es producto nuevo o preventa, puedes mencionarlo sutilmente
+1. Escribí una descripción de 2-3 párrafos cortos (máximo 150 palabras total)
+2. Usá un tono elegante, aspiracional y que destaque la EXCLUSIVIDAD y ORIGINALIDAD del producto
+3. Destacá los beneficios y características principales, no solo las especificaciones técnicas
+4. Si hay información de materiales/composición, mencionala de forma atractiva
+5. Si el producto está en oferta u outlet, NO lo menciones en la descripción (eso se muestra aparte)
+6. Si es producto nuevo o preventa, podés mencionarlo sutilmente
 7. NO uses emojis
 8. NO incluyas precios
-9. Escribe SOLO la descripcion, sin encabezados ni etiquetas
+9. IMPORTANTE: La descripción DEBE terminar con un call-to-action (CTA) atractivo en español rioplatense que enfatice la EXCLUSIVIDAD y ORIGINALIDAD del producto. Ejemplos de CTAs efectivos: "¡Llevate el tuyo antes de que se agote!", "Descubrí esta pieza única y exclusiva", "No te lo pierdas, es edición limitada", "Sumalo a tu colección ahora", "Hacelo tuyo, quedan pocas unidades"
+10. Escribí SOLO la descripción con el CTA al final, sin encabezados ni etiquetas adicionales
 
-DESCRIPCION:`;
+DESCRIPCIÓN:`;
+}
+
+// Generate e-commerce product description using AI (text only)
+export async function generateProductDescription(
+  product: ProductData,
+  imageBuffer?: Buffer | null
+): Promise<string> {
+  const client = getAIClient();
+  const productContext = buildProductContext(product);
+  
+  // If we have an image, use multimodal generation
+  if (imageBuffer && imageBuffer.length > 0) {
+    return generateMultimodalDescription(client, productContext, imageBuffer);
+  }
+
+  // Text-only generation
+  const model = client.chat(getModelName());
+  const prompt = buildPrompt(productContext, false);
 
   try {
     const result = await generateText({
       model,
       prompt,
-      maxTokens: 300,
-      temperature: 0.7,
+      // @ts-expect-error - maxTokens is supported by the AI SDK but types may not reflect it
+      maxTokens: 400,
     });
 
     return result.text.trim();
@@ -106,6 +142,91 @@ DESCRIPCION:`;
       `Failed to generate description: ${error instanceof Error ? error.message : "Unknown error"}`
     );
   }
+}
+
+// Generate description with image (multimodal)
+async function generateMultimodalDescription(
+  client: ReturnType<typeof createOpenAI>,
+  productContext: string,
+  imageBuffer: Buffer
+): Promise<string> {
+  const model = client.chat(getVisionModelName());
+  const prompt = buildPrompt(productContext, true);
+
+  // Convert buffer to base64 data URL
+  const base64Image = imageBuffer.toString("base64");
+  
+  // Detect image type from magic bytes
+  const mimeType = detectImageMimeType(imageBuffer);
+
+  try {
+    const result = await generateText({
+      model,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "image",
+              image: `data:${mimeType};base64,${base64Image}`,
+            },
+            {
+              type: "text",
+              text: prompt,
+            },
+          ],
+        },
+      ],
+      // @ts-expect-error - maxTokens is supported by the AI SDK but types may not reflect it
+      maxTokens: 400,
+    });
+
+    return result.text.trim();
+  } catch (error) {
+    // If multimodal fails, fall back to text-only
+    console.warn("Multimodal generation failed, falling back to text-only:", error);
+    
+    const textModel = client.chat(getModelName());
+    const textPrompt = buildPrompt(productContext, false);
+    
+    const result = await generateText({
+      model: textModel,
+      prompt: textPrompt,
+      // @ts-expect-error - maxTokens is supported by the AI SDK but types may not reflect it
+      maxTokens: 400,
+    });
+
+    return result.text.trim();
+  }
+}
+
+// Detect MIME type from image buffer magic bytes
+function detectImageMimeType(buffer: Buffer): string {
+  // Check magic bytes
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return "image/jpeg";
+  }
+  if (
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47
+  ) {
+    return "image/png";
+  }
+  if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46) {
+    return "image/gif";
+  }
+  if (
+    buffer[0] === 0x52 &&
+    buffer[1] === 0x49 &&
+    buffer[2] === 0x46 &&
+    buffer[3] === 0x46
+  ) {
+    return "image/webp";
+  }
+  // Default to JPEG
+  return "image/jpeg";
 }
 
 // Helper function to check if a value is truthy
@@ -126,6 +247,7 @@ export async function testAIConnection(): Promise<{ success: boolean; message: s
     const result = await generateText({
       model,
       prompt: "Responde solo 'OK' si puedes leer este mensaje.",
+      // @ts-expect-error - maxTokens is supported by the AI SDK but types may not reflect it
       maxTokens: 10,
     });
 

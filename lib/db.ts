@@ -82,6 +82,12 @@ export async function insertRows(
 
   // Filter out primary key if it's auto-generated (serial/identity)
   const primaryKey = columns.find((c) => c.isPrimary)?.name;
+  
+  // Get columns that have default values (we'll skip them if not in the row data)
+  const columnsWithDefaults = columns
+    .filter((col) => col.dataType === "boolean" && col.name === "ia")
+    .map((col) => col.name);
+  
   const insertColumns = columnNames.filter((col) => {
     // Skip id/primary key columns that are likely auto-generated
     if (col === primaryKey && (col === "id" || col.endsWith("_id"))) {
@@ -94,9 +100,25 @@ export async function insertRows(
   const errors: string[] = [];
   const now = new Date().toISOString();
 
-  for (const row of rows) {
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
     try {
-      const values = insertColumns.map((col) => {
+      // Filter columns: only include those that have values OR are required (timestamps)
+      // For columns with defaults (like 'ia'), skip if not in row data
+      const columnsToInsert = insertColumns.filter((col) => {
+        // Always include timestamps
+        if ((col === "created_at" && hasCreatedAt) || (col === "updated_at" && hasUpdatedAt)) {
+          return true;
+        }
+        // For columns with defaults (like 'ia'), only include if value exists in row
+        if (columnsWithDefaults.includes(col)) {
+          return row[col] !== undefined && row[col] !== null && row[col] !== "";
+        }
+        // Include all other columns
+        return true;
+      });
+
+      const values = columnsToInsert.map((col) => {
         // Set created_at and updated_at to current timestamp on insert
         if (col === "created_at" && hasCreatedAt) {
           return now;
@@ -104,18 +126,30 @@ export async function insertRows(
         if (col === "updated_at" && hasUpdatedAt) {
           return now;
         }
+        // For boolean 'ia' column, convert string values to boolean
+        if (col === "ia") {
+          const value = row[col];
+          if (value === null || value === undefined || value === "") {
+            return false; // Default to false if empty
+          }
+          // Convert string to boolean
+          const normalized = String(value).trim().toUpperCase();
+          return normalized === "S" || normalized === "Y" || normalized === "YES" || normalized === "TRUE" || normalized === "1" || normalized === "T";
+        }
         return row[col] ?? null;
       });
-      const placeholders = insertColumns.map((_, i) => `$${i + 1}`).join(", ");
-      const quotedColumns = insertColumns.map((c) => `"${c}"`).join(", ");
+      
+      const placeholders = columnsToInsert.map((_, i) => `$${i + 1}`).join(", ");
+      const quotedColumns = columnsToInsert.map((c) => `"${c}"`).join(", ");
 
       const query = `INSERT INTO "${TARGET_TABLE}" (${quotedColumns}) VALUES (${placeholders})`;
       await sql(query, values);
       inserted++;
     } catch (error) {
-      errors.push(
-        `Row error: ${error instanceof Error ? error.message : "Unknown error"}`
-      );
+      const rowNumber = i + 1;
+      const errorMessage = error instanceof Error ? error.message : "Unknown error";
+      const errorDetails = `Row ${rowNumber}: ${errorMessage}`;
+      errors.push(errorDetails);
     }
   }
 
@@ -194,7 +228,7 @@ export async function listTables(): Promise<string[]> {
     AND table_type = 'BASE TABLE'
     ORDER BY table_name
   `;
-  return result.map((r: { table_name: string }) => r.table_name);
+  return result.map((r) => (r as { table_name: string }).table_name);
 }
 
 // Test database connection

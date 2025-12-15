@@ -1,36 +1,36 @@
-import * as ftp from "basic-ftp";
+import * as SftpClientModule from "ssh2-sftp-client";
+const SftpClient = SftpClientModule.default || SftpClientModule;
 
-export interface FtpConfig {
+export interface SftpConfig {
   host: string;
   user: string;
   password: string;
-  port?: number;
-  secure?: boolean;
+  port: number;
 }
 
 export interface ImageFile {
   name: string;
   path: string;
   size: number;
+  modifyTime?: Date;
 }
 
-// Cache for FTP file list to avoid repeated connections
+// Cache for SFTP file list to avoid repeated connections
 let cachedFileList: ImageFile[] | null = null;
 let cacheTimestamp: number = 0;
 const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
 
-// Get FTP configuration from environment
-export function getFtpConfig(): FtpConfig {
+// Get SFTP configuration from environment
+export function getSftpConfig(): SftpConfig {
   return {
     host: process.env.FTP_HOST || "",
     user: process.env.FTP_USER || "",
     password: process.env.FTP_PASSWORD || "",
-    port: parseInt(process.env.FTP_PORT || "21", 10),
-    secure: process.env.FTP_SECURE === "true",
+    port: parseInt(process.env.FTP_PORT || "22", 10), // SFTP default port is 22
   };
 }
 
-// List all image files from FTP server
+// List all image files from SFTP server
 export async function listFtpImages(
   directory: string = "/",
   forceRefresh: boolean = false
@@ -40,23 +40,21 @@ export async function listFtpImages(
     return cachedFileList;
   }
 
-  const config = getFtpConfig();
+  const config = getSftpConfig();
 
   if (!config.host || !config.user) {
-    console.warn("FTP configuration incomplete, skipping image retrieval");
+    console.warn("SFTP configuration incomplete, skipping image retrieval");
     return [];
   }
 
-  const client = new ftp.Client();
-  client.ftp.verbose = false;
+  const client = new SftpClient();
 
   try {
-    await client.access({
+    await client.connect({
       host: config.host,
-      user: config.user,
-      password: config.password,
       port: config.port,
-      secure: config.secure,
+      username: config.user,
+      password: config.password,
     });
 
     const files = await client.list(directory);
@@ -65,13 +63,15 @@ export async function listFtpImages(
     const imageExtensions = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"];
     const imageFiles: ImageFile[] = files
       .filter((file) => {
+        if (file.type !== "-") return false; // Only files, not directories
         const ext = file.name.toLowerCase().slice(file.name.lastIndexOf("."));
-        return file.isFile && imageExtensions.includes(ext);
+        return imageExtensions.includes(ext);
       })
       .map((file) => ({
         name: file.name,
         path: `${directory}/${file.name}`.replace(/\/+/g, "/"),
         size: file.size,
+        modifyTime: file.modifyTime ? new Date(file.modifyTime) : undefined,
       }));
 
     // Update cache
@@ -80,10 +80,10 @@ export async function listFtpImages(
 
     return imageFiles;
   } catch (error) {
-    console.error("FTP connection error:", error);
+    console.error("SFTP connection error:", error);
     return [];
   } finally {
-    client.close();
+    await client.end();
   }
 }
 
@@ -135,4 +135,81 @@ export function findImageForSku(
 export function clearFtpCache(): void {
   cachedFileList = null;
   cacheTimestamp = 0;
+}
+
+// Download a single image from SFTP and return as Buffer
+export async function downloadImageFromSftp(imagePath: string): Promise<Buffer | null> {
+  const config = getSftpConfig();
+
+  if (!config.host || !config.user) {
+    console.warn("SFTP configuration incomplete, cannot download image");
+    return null;
+  }
+
+  const client = new SftpClient();
+
+  try {
+    await client.connect({
+      host: config.host,
+      port: config.port,
+      username: config.user,
+      password: config.password,
+    });
+
+    // Download file as buffer
+    const buffer = await client.get(imagePath) as Buffer;
+    return buffer;
+  } catch (error) {
+    console.error(`SFTP download error for ${imagePath}:`, error);
+    return null;
+  } finally {
+    await client.end();
+  }
+}
+
+// List all files (with full metadata) for indexing
+export async function listAllSftpImagesForIndexing(
+  directory: string = "/"
+): Promise<ImageFile[]> {
+  const config = getSftpConfig();
+
+  if (!config.host || !config.user) {
+    console.warn("SFTP configuration incomplete, skipping image retrieval");
+    return [];
+  }
+
+  const client = new SftpClient();
+
+  try {
+    await client.connect({
+      host: config.host,
+      port: config.port,
+      username: config.user,
+      password: config.password,
+    });
+
+    const files = await client.list(directory);
+
+    // Filter only image files
+    const imageExtensions = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"];
+    const imageFiles: ImageFile[] = files
+      .filter((file) => {
+        if (file.type !== "-") return false;
+        const ext = file.name.toLowerCase().slice(file.name.lastIndexOf("."));
+        return imageExtensions.includes(ext);
+      })
+      .map((file) => ({
+        name: file.name,
+        path: `${directory}/${file.name}`.replace(/\/+/g, "/"),
+        size: file.size,
+        modifyTime: file.modifyTime ? new Date(file.modifyTime) : undefined,
+      }));
+
+    return imageFiles;
+  } catch (error) {
+    console.error("SFTP connection error:", error);
+    return [];
+  } finally {
+    await client.end();
+  }
 }

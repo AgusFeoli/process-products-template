@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { neon } from "@neondatabase/serverless";
-import { listFtpImages, findImageForSku, clearFtpCache } from "@/lib/ftp-service";
+import { downloadImageFromSftp } from "@/lib/ftp-service";
+import { resolveProductImage } from "@/lib/image-matcher";
 import { generateProductDescription, type ProductData } from "@/lib/ai-service";
 
 const sql = neon(process.env.DATABASE_URL!);
 const TARGET_TABLE = process.env.TARGET_TABLE || "products";
 const BATCH_SIZE = 50;
+const AI_VERSION = "2.0"; // Increment when prompt/model changes
 
 // Processing state (in-memory for this instance)
 let isProcessing = false;
@@ -14,10 +16,13 @@ let processingStats = {
   processed: 0,
   success: 0,
   errors: 0,
+  skipped: 0,
   currentBatch: 0,
   totalBatches: 0,
   lastError: "",
   startTime: 0,
+  withImage: 0,
+  withoutImage: 0,
 };
 
 // GET: Check processing status
@@ -65,10 +70,13 @@ export async function POST(request: NextRequest) {
     processed: 0,
     success: 0,
     errors: 0,
+    skipped: 0,
     currentBatch: 0,
     totalBatches: 0,
     lastError: "",
     startTime: Date.now(),
+    withImage: 0,
+    withoutImage: 0,
   };
 
   // Run processing in background (non-blocking)
@@ -88,9 +96,6 @@ export async function POST(request: NextRequest) {
 // Main processing function
 async function processAllBatches() {
   try {
-    // Clear FTP cache to get fresh file list
-    clearFtpCache();
-
     // Get total count of products to process (ia = false or ia IS NULL)
     const countResult = await sql(
       `SELECT COUNT(*) as count FROM "${TARGET_TABLE}" WHERE ia IS NULL OR ia = false`
@@ -107,9 +112,9 @@ async function processAllBatches() {
     processingStats.total = totalCount;
     processingStats.totalBatches = Math.ceil(totalCount / BATCH_SIZE);
 
-    // Get FTP images list once
-    const ftpImages = await listFtpImages(process.env.FTP_IMAGES_DIR || "/");
-    console.log(`Found ${ftpImages.length} images on FTP server`);
+    // Check if we have indexed images
+    const imageCountResult = await sql`SELECT COUNT(*) as count FROM sftp_images`;
+    const indexedImageCount = Number(imageCountResult[0]?.count || 0);
 
     let batchNumber = 0;
 
@@ -131,19 +136,26 @@ async function processAllBatches() {
         break;
       }
 
-      console.log(`Processing batch ${batchNumber}: ${batch.length} products`);
-
       // Process each product in the batch
       for (const product of batch) {
         if (!isProcessing) break;
 
         try {
-          await processProduct(product, ftpImages);
-          processingStats.success++;
+          const result = await processProduct(product);
+          if (result.skipped) {
+            processingStats.skipped++;
+          } else {
+            processingStats.success++;
+            if (result.hasImage) {
+              processingStats.withImage++;
+            } else {
+              processingStats.withoutImage++;
+            }
+          }
         } catch (error) {
           processingStats.errors++;
           processingStats.lastError = error instanceof Error ? error.message : "Unknown error";
-          console.error(`Error processing product ${product.id}:`, error);
+          console.error(`[ProcessJob] Error product ${product.id}:`, error);
         }
 
         processingStats.processed++;
@@ -153,7 +165,7 @@ async function processAllBatches() {
       await delay(100);
     }
   } catch (error) {
-    console.error("Batch processing error:", error);
+    console.error("Fatal error:", error);
     processingStats.lastError = error instanceof Error ? error.message : "Unknown error";
   } finally {
     isProcessing = false;
@@ -162,23 +174,35 @@ async function processAllBatches() {
 
 // Process a single product
 async function processProduct(
-  product: Record<string, unknown>,
-  ftpImages: Awaited<ReturnType<typeof listFtpImages>>
-) {
-  const productId = product.id;
-  const sku = String(product.modelo || "");
+  product: Record<string, unknown>
+): Promise<{ skipped: boolean; hasImage: boolean }> {
+  const productId = product.id as number;
+  const modelo = String(product.modelo || "");
+  const productUpdatedAt = product.updated_at as string | null;
 
-  // 1. Find matching image
-  let imagePath: string | null = null;
-  if (sku && ftpImages.length > 0) {
-    const matchedImage = findImageForSku(ftpImages, sku);
-    if (matchedImage) {
-      imagePath = matchedImage.path;
-      console.log(`Found image for SKU ${sku}: ${imagePath}`);
-    }
+  // 1. Check cache to see if we should skip
+  const shouldSkip = await checkIfShouldSkip(productId, productUpdatedAt);
+  if (shouldSkip) {
+    return { skipped: true, hasImage: false };
   }
 
-  // 2. Generate AI description
+  // 2. Resolve image using indexed DB (fast trigram search + cache)
+  let imagePath: string | null = null;
+  let imageBuffer: Buffer | null = null;
+  let imageModifyTime: Date | null = null;
+
+  if (modelo) {
+      const imageMatch = await resolveProductImage(productId, modelo);
+      if (imageMatch) {
+        imagePath = imageMatch.imagePath;
+        imageModifyTime = imageMatch.imageModifyTime;
+
+        // 3. Download image for multimodal AI
+        imageBuffer = await downloadImageFromSftp(imagePath);
+      }
+  }
+
+  // 4. Build product data for AI
   const productData: ProductData = {
     proveedor: product.proveedor as string | null,
     modelo: product.modelo as string | null,
@@ -194,12 +218,12 @@ async function processProduct(
     imagen: imagePath,
   };
 
-  const newDescription = await generateProductDescription(productData);
+  // 5. Generate AI description (with image if available)
+  const newDescription = await generateProductDescription(productData, imageBuffer);
 
-  // 3. Update database
+  // 6. Update product in database
   const now = new Date().toISOString();
 
-  // Build update query based on whether we have an image
   if (imagePath) {
     await sql(
       `UPDATE "${TARGET_TABLE}"
@@ -219,6 +243,96 @@ async function processProduct(
        WHERE id = $3`,
       [newDescription, now, productId]
     );
+  }
+
+  // 7. Update AI cache/version tracking
+  await updateAiCache(productId, productUpdatedAt, imagePath, imageModifyTime);
+
+  return { skipped: false, hasImage: !!imageBuffer };
+}
+
+// Check if product should be skipped based on cache
+async function checkIfShouldSkip(
+  productId: number,
+  productUpdatedAt: string | null
+): Promise<boolean> {
+  try {
+    const cached = await sql`
+      SELECT 
+        ai_version,
+        product_updated_at,
+        image_modify_time
+      FROM product_ai 
+      WHERE product_id = ${productId}
+    `;
+
+    if (cached.length === 0) {
+      return false; // No cache, need to process
+    }
+
+    const cache = cached[0];
+    
+    // If AI version changed, need to reprocess
+    if (cache.ai_version !== AI_VERSION) {
+      return false;
+    }
+
+    // If product was updated since last AI generation, reprocess
+    if (productUpdatedAt && cache.product_updated_at) {
+      const productDate = new Date(productUpdatedAt);
+      const cachedDate = new Date(cache.product_updated_at as string);
+      if (productDate > cachedDate) {
+        return false;
+      }
+    }
+
+    // Cache is valid, skip
+    return true;
+  } catch {
+    // If cache check fails, don't skip
+    return false;
+  }
+}
+
+// Update AI cache after processing
+async function updateAiCache(
+  productId: number,
+  productUpdatedAt: string | null,
+  imagePath: string | null,
+  imageModifyTime: Date | null
+): Promise<void> {
+  try {
+    const now = new Date().toISOString();
+    
+    await sql`
+      INSERT INTO product_ai (
+        product_id,
+        ai_version,
+        ai_generated_at,
+        product_updated_at,
+        image_path,
+        image_modify_time,
+        updated_at
+      )
+      VALUES (
+        ${productId},
+        ${AI_VERSION},
+        ${now}::timestamptz,
+        ${productUpdatedAt}::timestamptz,
+        ${imagePath},
+        ${imageModifyTime?.toISOString() || null}::timestamptz,
+        ${now}::timestamptz
+      )
+      ON CONFLICT (product_id) DO UPDATE SET
+        ai_version = EXCLUDED.ai_version,
+        ai_generated_at = EXCLUDED.ai_generated_at,
+        product_updated_at = EXCLUDED.product_updated_at,
+        image_path = EXCLUDED.image_path,
+        image_modify_time = EXCLUDED.image_modify_time,
+        updated_at = EXCLUDED.updated_at
+    `;
+  } catch (error) {
+    console.error(`Failed to update AI cache for product ${productId}:`, error);
   }
 }
 

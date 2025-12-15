@@ -26,7 +26,7 @@ import {
 } from "./actions";
 import { getColumnDisplayName, TABLE_COLUMN_ORDER } from "@/lib/column-mapping";
 import { Progress } from "@/components/ui/progress";
-import { Database, Upload, RefreshCw, Download, AlertCircle, Loader2, ArrowUp, ArrowDown, ArrowUpDown, Trash2, Sparkles, Square } from "lucide-react";
+import { Database, Upload, RefreshCw, Download, AlertCircle, Loader2, ArrowUp, ArrowDown, ArrowUpDown, Trash2, Sparkles, Square, FolderSync, Image } from "lucide-react";
 
 // Sort direction type
 type SortDirection = "asc" | "desc" | null;
@@ -52,10 +52,17 @@ export default function Home() {
     processed: number;
     success: number;
     errors: number;
+    skipped?: number;
     currentBatch: number;
     totalBatches: number;
     lastError: string;
+    withImage?: number;
+    withoutImage?: number;
   } | null>(null);
+
+  // Image indexing state
+  const [isIndexing, setIsIndexing] = useState(false);
+  const [indexedImageCount, setIndexedImageCount] = useState<number>(0);
 
   // Sorting state
   const [sortColumn, setSortColumn] = useState<string | null>(null);
@@ -262,6 +269,52 @@ export default function Home() {
     }
   };
 
+  // Fetch indexed image count on load
+  useEffect(() => {
+    const fetchIndexedCount = async () => {
+      try {
+        const response = await fetch("/api/index-images");
+        const data = await response.json();
+        setIndexedImageCount(data.dbCount || 0);
+      } catch {
+        // Ignore errors
+      }
+    };
+    fetchIndexedCount();
+  }, []);
+
+  // Image indexing handler
+  const handleStartIndexing = async () => {
+    setIsIndexing(true);
+    try {
+      const response = await fetch("/api/index-images", { method: "POST" });
+      const data = await response.json();
+
+      if (data.success) {
+        toast.success("Indexado de imágenes iniciado");
+
+        // Poll for completion
+        const pollInterval = setInterval(async () => {
+          const statusRes = await fetch("/api/index-images");
+          const statusData = await statusRes.json();
+          setIndexedImageCount(statusData.dbCount || 0);
+
+          if (!statusData.isIndexing) {
+            clearInterval(pollInterval);
+            setIsIndexing(false);
+            toast.success(`Indexado completado: ${statusData.dbCount} imágenes`);
+          }
+        }, 3000);
+      } else {
+        toast.error(data.message || "Error al iniciar indexado");
+        setIsIndexing(false);
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Error al indexar");
+      setIsIndexing(false);
+    }
+  };
+
   // AI Processing handlers
   const pollProcessingStatus = useCallback(async () => {
     try {
@@ -453,6 +506,24 @@ export default function Home() {
               <span className="ml-2">Exportar</span>
             </Button>
 
+            {/* Image Indexing Button */}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleStartIndexing}
+              disabled={isIndexing}
+              className="text-cyan-600 hover:text-cyan-700 hover:bg-cyan-50"
+            >
+              {isIndexing ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <FolderSync className="h-4 w-4" />
+              )}
+              <span className="ml-2">
+                {isIndexing ? "Indexando..." : `Indexar (${indexedImageCount})`}
+              </span>
+            </Button>
+
             {/* AI Processing Button */}
             {isProcessingAI ? (
               <Button
@@ -498,15 +569,28 @@ export default function Home() {
               className="h-2"
             />
             <div className="flex items-center justify-between mt-2 text-xs text-muted-foreground">
-              <span className="text-green-600">Exitosos: {processingStats.success}</span>
-              {processingStats.errors > 0 && (
-                <span className="text-red-600">Errores: {processingStats.errors}</span>
-              )}
-              {processingStats.lastError && (
-                <span className="text-red-500 truncate max-w-[200px]" title={processingStats.lastError}>
-                  Ultimo error: {processingStats.lastError}
-                </span>
-              )}
+              <div className="flex items-center gap-3">
+                <span className="text-green-600">Exitosos: {processingStats.success}</span>
+                {(processingStats.withImage ?? 0) > 0 && (
+                  <span className="text-cyan-600 flex items-center gap-1">
+                    <Image className="h-3 w-3" />
+                    {processingStats.withImage}
+                  </span>
+                )}
+                {(processingStats.skipped ?? 0) > 0 && (
+                  <span className="text-gray-500">Omitidos: {processingStats.skipped}</span>
+                )}
+              </div>
+              <div className="flex items-center gap-3">
+                {processingStats.errors > 0 && (
+                  <span className="text-red-600">Errores: {processingStats.errors}</span>
+                )}
+                {processingStats.lastError && (
+                  <span className="text-red-500 truncate max-w-[200px]" title={processingStats.lastError}>
+                    Ultimo error: {processingStats.lastError}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
         )}
