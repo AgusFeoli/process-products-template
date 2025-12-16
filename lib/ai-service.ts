@@ -106,10 +106,114 @@ INSTRUCCIONES:
 8. Si el producto es nuevo, de temporada actual o una **edición limitada/exclusiva**, podés mencionarlo sutilmente para generar entusiasmo (ej.: "nueva colección", "edición especial de la temporada"), pero sin exagerar ni distraer de la descripción principal.  
 9. **No** uses emojis ni caracteres especiales innecesarios. Mantené un estilo profesional y sofisticado.  
 10. **No** incluyas referencias a "imágenes" o comandos; la descripción debe leerse como un texto escrito por un redactor humano, no por una IA siguiendo instrucciones.  
-11. **IMPORTANTE**: La descripción DEBE terminar con un **call-to-action (CTA)** atractivo en español rioplatense, que enfatice la **exclusividad** y **urgencia** de adquirir el producto. Por ejemplo: *"¡Llevate el tuyo antes de que se agote!"*, *"Descubrí esta pieza única y exclusiva"*, *"No te lo pierdas, es edición limitada"*, *"Sumalo a tu colección ahora"*, *"Hacelo tuyo, quedan pocas unidades"*.
+11. **SOBRE EL CALL-TO-ACTION (CTA)**: 
+    - El CTA es **OPCIONAL**. Solo incluilo si realmente suma valor y urgencia a la descripción.
+    - Si la descripción ya es convincente y completa, podés finalizarla sin CTA.
+    - Si decidís incluir un CTA, debe ser creativo y variado.
+    - El CTA debe estar en español rioplatense y enfatizar **exclusividad** y **urgencia** cuando sea apropiado.
+{{CTA_INSTRUCTIONS}}
 
 **DESCRIPCIÓN:**  
 *(A continuación, redactá la descripción siguiendo todas las instrucciones anteriores. No incluyas títulos ni etiquetas, solo el texto descriptivo en párrafos.)*`;
+
+// Build CTA instructions based on product attributes
+function buildCTAInstructions(product: ProductData): string {
+  const isNuevo = isTrue(product.nuevo);
+  const isPreventa = isTrue(product.preventa);
+  const isSale = isTrue(product.sale);
+  const isOutlet = isTrue(product.outlet);
+
+  // Priority order: Outlet > Sale > Preventa > Nuevo
+  // If multiple attributes, use the highest priority one
+  
+  if (isOutlet) {
+    return `
+**INSTRUCCIONES ESPECÍFICAS PARA EL CTA (Call to Action):**
+- El producto está marcado como **OUTLET** (liquidación final).
+- El CTA debe enfatizar **última oportunidad**, **stock limitado**, **no volver a encontrar** y **liquidación final**.
+- Ejemplos de CTAs apropiados en rioplatense (usá como inspiración, pero creá el tuyo propio):
+  *"¡Última oportunidad! No volverás a encontrarlo"*
+  *"Stock limitado, no te quedes sin el tuyo"*
+  *"Liquidación final, aprovechá antes de que se agote"*
+  *"Últimas unidades, no te lo pierdas"*
+  *"Esta es tu última chance, llevatelo ya"*
+  *"No volverás a verlo a este precio"*
+  *"Aprovechá esta liquidación, quedan pocos"*
+  *"Última oportunidad de tenerlo"*
+- Variá completamente el CTA. Sé creativo y evita repetir estructuras similares.
+`;
+  }
+
+  if (isSale) {
+    return `
+**INSTRUCCIONES ESPECÍFICAS PARA EL CTA (Call to Action):**
+- El producto está marcado como **SALE** (en oferta).
+- El CTA debe enfatizar **oportunidad**, **aprovechar la oferta** y **no perder el momento**.
+- Ejemplos de CTAs apropiados en rioplatense (usá como inspiración, pero creá el tuyo propio):
+  *"¡Aprovechá esta oferta especial!"*
+  *"No dejes pasar esta oportunidad"*
+  *"Sumalo a tu guardarropa, es tu momento"*
+  *"Llevatelo ahora, está en oferta"*
+  *"Aprovechá el precio especial"*
+  *"No te pierdas esta oportunidad única"*
+  *"Hacelo tuyo mientras está en oferta"*
+  *"Es el momento ideal para sumarlo"*
+- Variá completamente el CTA. Sé creativo y evita repetir estructuras similares. El CTA de SALE debe ser diferente al de OUTLET.
+`;
+  }
+
+  if (isPreventa) {
+    return `
+**INSTRUCCIONES ESPECÍFICAS PARA EL CTA (Call to Action):**
+- El producto está marcado como **PREVENTA**.
+- El CTA debe enfatizar **reservar**, **asegurar**, **anticiparse** y **ser de los primeros**.
+- Ejemplos de CTAs apropiados en rioplatense (usá como inspiración, pero creá el tuyo propio):
+  *"Reservá el tuyo ahora y asegurate de tenerlo"*
+  *"Sé de los primeros en llevártelo"*
+  *"Anticipate y reservalo ya"*
+  *"Asegurá tu pieza, reservalo ahora"*
+  *"No te quedes sin el tuyo, reservalo"*
+  *"Reservalo antes que se agote"*
+  *"Asegurá tu lugar, es preventa"*
+  *"Anticipate y llevatelo primero"*
+- Variá completamente el CTA. Sé creativo y evita repetir estructuras similares.
+`;
+  }
+
+  if (isNuevo) {
+    return `
+**INSTRUCCIONES ESPECÍFICAS PARA EL CTA (Call to Action):**
+- El producto está marcado como **NUEVO**.
+- El CTA debe enfatizar **novedad**, **exclusividad**, **estar a la vanguardia** y **ser de los primeros**.
+- Ejemplos de CTAs apropiados en rioplatense (usá como inspiración, pero creá el tuyo propio):
+  *"Descubrí esta novedad exclusiva"*
+  *"Sé de los primeros en tenerlo"*
+  *"Llevate el tuyo, es edición nueva"*
+  *"No te pierdas esta pieza única"*
+  *"Sumalo a tu colección, es tendencia"*
+  *"Está nuevo, descubrilo primero"*
+  *"Novedad exclusiva, llevatela ya"*
+  *"Sé la primera en tenerlo"*
+- Variá completamente el CTA. Sé creativo y evita repetir estructuras similares.
+`;
+  }
+
+  // Default CTA if no specific attributes
+  return `
+**INSTRUCCIONES ESPECÍFICAS PARA EL CTA (Call to Action):**
+- El CTA debe enfatizar **exclusividad** y **urgencia** de adquirir el producto.
+- Ejemplos de CTAs apropiados en rioplatense (usá como inspiración, pero creá el tuyo propio):
+  *"¡Llevate el tuyo antes de que se agote!"*
+  *"Descubrí esta pieza única y exclusiva"*
+  *"No te lo pierdas"*
+  *"Sumalo a tu colección ahora"*
+  *"Hacelo tuyo, quedan pocas unidades"*
+  *"Llevatelo, es exclusivo"*
+  *"No dejes pasar esta oportunidad"*
+  *"Sumalo a tu guardarropa ya"*
+- Variá completamente el CTA. Sé creativo y evita repetir estructuras similares.
+`;
+  }
 
 // Build image instruction text
 function buildImageInstruction(imageCount: number): string {
@@ -137,15 +241,18 @@ function buildImageInstruction(imageCount: number): string {
 function buildPrompt(
   productContext: string,
   imageCount: number,
+  product: ProductData,
   customTemplate?: string
 ): string {
   const template = customTemplate || DEFAULT_PROMPT_TEMPLATE;
   const imageInstruction = buildImageInstruction(imageCount);
+  const ctaInstructions = buildCTAInstructions(product);
   
   // Replace placeholders
   return template
     .replace(/\{\{IMAGE_INSTRUCTIONS\}\}/g, imageInstruction)
-    .replace(/\{\{PRODUCT_CONTEXT\}\}/g, productContext);
+    .replace(/\{\{PRODUCT_CONTEXT\}\}/g, productContext)
+    .replace(/\{\{CTA_INSTRUCTIONS\}\}/g, ctaInstructions);
 }
 
 // Generate e-commerce product description using AI (text only or with images)
@@ -166,12 +273,12 @@ export async function generateProductDescription(
   
   // If we have images, use multimodal generation
   if (images.length > 0) {
-    return generateMultimodalDescription(client, productContext, images, customPromptTemplate);
+    return generateMultimodalDescription(client, productContext, images, product, customPromptTemplate);
   }
 
   // Text-only generation
   const model = client.chat(getModelName());
-  const prompt = buildPrompt(productContext, 0, customPromptTemplate);
+  const prompt = buildPrompt(productContext, 0, product, customPromptTemplate);
 
   try {
     const result = await generateText({
@@ -181,7 +288,7 @@ export async function generateProductDescription(
       maxTokens: 400,
     });
 
-    return result.text.trim();
+    return fixSpanishPunctuation(result.text.trim());
   } catch (error) {
     console.error("AI generation error:", error);
     throw new Error(
@@ -195,10 +302,11 @@ async function generateMultimodalDescription(
   client: ReturnType<typeof createOpenAI>,
   productContext: string,
   imageBuffers: Buffer[],
+  product: ProductData,
   customPromptTemplate?: string
 ): Promise<string> {
   const model = client.chat(getVisionModelName());
-  const prompt = buildPrompt(productContext, imageBuffers.length, customPromptTemplate);
+  const prompt = buildPrompt(productContext, imageBuffers.length, product, customPromptTemplate);
 
   // Convert buffers to base64 data URLs
   const imageContents = imageBuffers.map(buffer => {
@@ -229,13 +337,13 @@ async function generateMultimodalDescription(
       maxTokens: 400,
     });
 
-    return result.text.trim();
+    return fixSpanishPunctuation(result.text.trim());
   } catch (error) {
     // If multimodal fails, fall back to text-only
     console.warn("Multimodal generation failed, falling back to text-only:", error);
     
     const textModel = client.chat(getModelName());
-    const textPrompt = buildPrompt(productContext, 0, customPromptTemplate);
+    const textPrompt = buildPrompt(productContext, 0, product, customPromptTemplate);
     
     const result = await generateText({
       model: textModel,
@@ -244,7 +352,7 @@ async function generateMultimodalDescription(
       maxTokens: 400,
     });
 
-    return result.text.trim();
+    return fixSpanishPunctuation(result.text.trim());
   }
 }
 
@@ -277,11 +385,120 @@ function detectImageMimeType(buffer: Buffer): string {
   return "image/jpeg";
 }
 
+// Fix Spanish punctuation: ensure ¡/¿ are paired with !/?
+// This function ensures that:
+// 1. If a sentence starts with ¡, it must end with !
+// 2. If a sentence starts with ¿, it must end with ?
+// 3. If a sentence ends with !, it should start with ¡ (if it's a new sentence)
+// 4. If a sentence ends with ?, it should start with ¿ (if it's a new sentence)
+function fixSpanishPunctuation(text: string): string {
+  let result = text;
+  
+  // FIRST: Fix sentences that START with ¡ or ¿ but don't have the closing mark
+  
+  // Pattern 1: Fix sentences that start with ¡ but don't end with ! (at end of text)
+  // Example: "¡Hacelas tuyas hoy mismo" -> "¡Hacelas tuyas hoy mismo!"
+  result = result.replace(/(¡[^!?.]*?)(\s*)$/gm, (match, sentence, trailing) => {
+    const trimmed = sentence.trim();
+    // If it starts with ¡ and doesn't end with !, ?, or ., add !
+    if (trimmed.startsWith('¡') && !trimmed.endsWith('!') && !trimmed.endsWith('?') && !trimmed.endsWith('.')) {
+      return sentence + '!' + trailing;
+    }
+    return match;
+  });
+  
+  // Pattern 2: Fix sentences that start with ¿ but don't end with ? (at end of text)
+  result = result.replace(/(¿[^!?.]*?)(\s*)$/gm, (match, sentence, trailing) => {
+    const trimmed = sentence.trim();
+    if (trimmed.startsWith('¿') && !trimmed.endsWith('?') && !trimmed.endsWith('!') && !trimmed.endsWith('.')) {
+      return sentence + '?' + trailing;
+    }
+    return match;
+  });
+  
+  // Pattern 3: Fix sentences that start with ¡ but don't end with ! (before a period)
+  // Example: "¡Hacelas tuyas hoy mismo." -> "¡Hacelas tuyas hoy mismo!."
+  result = result.replace(/(¡[^!?.]*?)(\s*)(\.)/g, (match, sentence, space, period) => {
+    const trimmed = sentence.trim();
+    // If it starts with ¡ and doesn't end with !, add ! before the period
+    if (trimmed.startsWith('¡') && !trimmed.endsWith('!') && !trimmed.endsWith('?')) {
+      return sentence + '!' + space + period;
+    }
+    return match;
+  });
+  
+  // Pattern 4: Fix sentences that start with ¿ but don't end with ? (before a period)
+  result = result.replace(/(¿[^!?.]*?)(\s*)(\.)/g, (match, sentence, space, period) => {
+    const trimmed = sentence.trim();
+    if (trimmed.startsWith('¿') && !trimmed.endsWith('?') && !trimmed.endsWith('!')) {
+      return sentence + '?' + space + period;
+    }
+    return match;
+  });
+  
+  // SECOND: Fix sentences that END with ! or ? but don't have the opening mark
+  
+  // Pattern 5: Fix sentences that start after punctuation and end with ! but lack ¡
+  result = result.replace(/([.!?]\s+)([A-ZÁÉÍÓÚÑ][^¡!]*!)/g, (match, prefix, sentence) => {
+    if (!sentence.trim().startsWith('¡')) {
+      return prefix + '¡' + sentence;
+    }
+    return match;
+  });
+  
+  // Pattern 6: Fix sentences at the start of text or after newlines that end with ! but lack ¡
+  result = result.replace(/(^|\n\s*)([A-ZÁÉÍÓÚÑ][^¡!]*!)/gm, (match, prefix, sentence) => {
+    if (!sentence.trim().startsWith('¡')) {
+      return prefix + '¡' + sentence;
+    }
+    return match;
+  });
+  
+  // Pattern 7: Fix sentences that start after punctuation and end with ? but lack ¿
+  result = result.replace(/([.!?]\s+)([A-ZÁÉÍÓÚÑ][^¿?]*\?)/g, (match, prefix, sentence) => {
+    if (!sentence.trim().startsWith('¿')) {
+      return prefix + '¿' + sentence;
+    }
+    return match;
+  });
+  
+  // Pattern 8: Fix sentences at the start of text or after newlines that end with ? but lack ¿
+  result = result.replace(/(^|\n\s*)([A-ZÁÉÍÓÚÑ][^¿?]*\?)/gm, (match, prefix, sentence) => {
+    if (!sentence.trim().startsWith('¿')) {
+      return prefix + '¿' + sentence;
+    }
+    return match;
+  });
+  
+  // Pattern 9: Fix cases where a sentence starts after a comma and ends with ! but lacks ¡
+  result = result.replace(/(,\s+)([A-ZÁÉÍÓÚÑ][^¡!]*!)/g, (match, commaSpace, sentence) => {
+    if (!sentence.trim().startsWith('¡')) {
+      return commaSpace + '¡' + sentence;
+    }
+    return match;
+  });
+  
+  // Pattern 10: Fix cases where a sentence starts after a semicolon and ends with ! but lacks ¡
+  result = result.replace(/(;\s+)([A-ZÁÉÍÓÚÑ][^¡!]*!)/g, (match, semicolonSpace, sentence) => {
+    if (!sentence.trim().startsWith('¡')) {
+      return semicolonSpace + '¡' + sentence;
+    }
+    return match;
+  });
+  
+  return result;
+}
+
 // Helper function to check if a value is truthy
 function isTrue(value: string | boolean | null | undefined): boolean {
   if (typeof value === "boolean") return value;
   if (typeof value === "string") {
-    return value.toLowerCase() === "true" || value === "1" || value.toLowerCase() === "si";
+    const lower = value.toLowerCase().trim();
+    // Support "S" (Sí) and "N" (No) as used in the products table
+    if (lower === "s" || lower === "si" || lower === "sí") return true;
+    if (lower === "n" || lower === "no") return false;
+    // Support other common formats
+    return lower === "true" || value === "1";
   }
   return false;
 }

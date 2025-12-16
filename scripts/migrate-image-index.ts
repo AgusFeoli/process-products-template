@@ -147,7 +147,8 @@ INSTRUCCIONES:
 8. Si el producto es nuevo, de temporada actual o una **edición limitada/exclusiva**, podés mencionarlo sutilmente para generar entusiasmo (ej.: "nueva colección", "edición especial de la temporada"), pero sin exagerar ni distraer de la descripción principal.  
 9. **No** uses emojis ni caracteres especiales innecesarios. Mantené un estilo profesional y sofisticado.  
 10. **No** incluyas referencias a "imágenes" o comandos; la descripción debe leerse como un texto escrito por un redactor humano, no por una IA siguiendo instrucciones.  
-11. **IMPORTANTE**: La descripción DEBE terminar con un **call-to-action (CTA)** atractivo en español rioplatense, que enfatice la **exclusividad** y **urgencia** de adquirir el producto. Por ejemplo: *"¡Llevate el tuyo antes de que se agote!"*, *"Descubrí esta pieza única y exclusiva"*, *"No te lo pierdas, es edición limitada"*, *"Sumalo a tu colección ahora"*, *"Hacelo tuyo, quedan pocas unidades"*.
+11. **IMPORTANTE**: La descripción DEBE terminar con un **call-to-action (CTA)** atractivo en español rioplatense, que enfatice la **exclusividad** y **urgencia** de adquirir el producto.
+{{CTA_INSTRUCTIONS}}
 
 **DESCRIPCIÓN:**  
 *(A continuación, redactá la descripción siguiendo todas las instrucciones anteriores. No incluyas títulos ni etiquetas, solo el texto descriptivo en párrafos.)*`;

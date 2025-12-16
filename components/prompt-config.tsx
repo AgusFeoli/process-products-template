@@ -39,7 +39,12 @@ INSTRUCCIONES:
 8. Si el producto es nuevo, de temporada actual o una **edición limitada/exclusiva**, podés mencionarlo sutilmente para generar entusiasmo (ej.: "nueva colección", "edición especial de la temporada"), pero sin exagerar ni distraer de la descripción principal.  
 9. **No** uses emojis ni caracteres especiales innecesarios. Mantené un estilo profesional y sofisticado.  
 10. **No** incluyas referencias a "imágenes" o comandos; la descripción debe leerse como un texto escrito por un redactor humano, no por una IA siguiendo instrucciones.  
-11. **IMPORTANTE**: La descripción DEBE terminar con un **call-to-action (CTA)** atractivo en español rioplatense, que enfatice la **exclusividad** y **urgencia** de adquirir el producto. Por ejemplo: *"¡Llevate el tuyo antes de que se agote!"*, *"Descubrí esta pieza única y exclusiva"*, *"No te lo pierdas, es edición limitada"*, *"Sumalo a tu colección ahora"*, *"Hacelo tuyo, quedan pocas unidades"*.
+11. **SOBRE EL CALL-TO-ACTION (CTA)**: 
+    - El CTA es **OPCIONAL**. Solo incluilo si realmente suma valor y urgencia a la descripción.
+    - Si la descripción ya es convincente y completa, podés finalizarla sin CTA.
+    - Si decidís incluir un CTA, debe ser creativo y variado.
+    - El CTA debe estar en español rioplatense y enfatizar **exclusividad** y **urgencia** cuando sea apropiado.
+{{CTA_INSTRUCTIONS}}
 
 **DESCRIPCIÓN:**  
 *(A continuación, redactá la descripción siguiendo todas las instrucciones anteriores. No incluyas títulos ni etiquetas, solo el texto descriptivo en párrafos.)*`;
@@ -172,6 +177,14 @@ export function PromptConfig({ open, onOpenChange, onSave }: PromptConfigProps) 
                   </code>
                   <span className="flex-1 text-muted-foreground leading-relaxed pt-0.5">
                     Información del producto (marca, modelo, descripción, composición, etc.)
+                  </span>
+                </div>
+                <div className="flex items-start gap-3">
+                  <code className="px-3 py-1.5 bg-blue-100 dark:bg-blue-900/50 rounded-md text-blue-800 dark:text-blue-200 font-mono text-xs border border-blue-200 dark:border-blue-800 shadow-sm">
+                    {"{{CTA_INSTRUCTIONS}}"}
+                  </code>
+                  <span className="flex-1 text-muted-foreground leading-relaxed pt-0.5">
+                    Instrucciones específicas para el CTA basadas en los atributos del producto (Nuevo, Preventa, Sale, Outlet)
                   </span>
                 </div>
               </div>

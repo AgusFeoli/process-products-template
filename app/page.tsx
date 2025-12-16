@@ -258,7 +258,11 @@ export default function Home() {
     value: string
   ) => {
     const result = await updateCell(primaryKeyValue, columnName, value);
-    if (!result.success) {
+    if (result.success) {
+      // Recargar datos automáticamente después de actualizar
+      await loadData(false);
+      toast.success("Celda actualizada");
+    } else {
       toast.error(result.error || "Error al actualizar");
     }
   };
@@ -319,59 +323,27 @@ export default function Home() {
     }
   };
 
-  // Generate a luxurious fashion-inspired completion sound
+  // Play completion sound - Doble Ping
   const playCompletionSound = useCallback(() => {
     try {
       const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-      
-      // Create a sophisticated chime with multiple harmonics for a luxurious feel
-      // Using a major chord progression (C-E-G) for elegance
-      const frequencies = [523.25, 659.25, 783.99]; // C5, E5, G5
+      const frequencies = [700, 900];
       const startTime = audioContext.currentTime;
       
-      frequencies.forEach((freq, index) => {
-        const oscillator = audioContext.createOscillator();
-        const gainNode = audioContext.createGain();
-        
-        // Use a softer waveform for elegance
-        oscillator.type = "sine";
-        oscillator.frequency.value = freq;
-        
-        // Stagger the notes slightly for a cascading effect
-        const noteStart = startTime + (index * 0.08);
-        const noteDuration = 0.4;
-        
-        // Smooth attack and decay for luxury feel
-        gainNode.gain.setValueAtTime(0, noteStart);
-        gainNode.gain.linearRampToValueAtTime(0.25, noteStart + 0.05);
-        gainNode.gain.exponentialRampToValueAtTime(0.01, noteStart + noteDuration);
-        
-        oscillator.connect(gainNode);
-        gainNode.connect(audioContext.destination);
-        
-        oscillator.start(noteStart);
-        oscillator.stop(noteStart + noteDuration);
+      frequencies.forEach((freq, idx) => {
+        const osc = audioContext.createOscillator();
+        const gain = audioContext.createGain();
+        osc.type = "sine";
+        osc.frequency.value = freq;
+        const noteStart = startTime + (idx * 0.1);
+        gain.gain.setValueAtTime(0, noteStart);
+        gain.gain.linearRampToValueAtTime(0.3, noteStart + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.01, noteStart + 0.15);
+        osc.connect(gain);
+        gain.connect(audioContext.destination);
+        osc.start(noteStart);
+        osc.stop(noteStart + 0.15);
       });
-      
-      // Add a subtle reverb-like effect with a delayed lower note
-      setTimeout(() => {
-        const bassOscillator = audioContext.createOscillator();
-        const bassGain = audioContext.createGain();
-        
-        bassOscillator.type = "sine";
-        bassOscillator.frequency.value = 261.63; // C4 (one octave lower)
-        
-        const bassStart = audioContext.currentTime;
-        bassGain.gain.setValueAtTime(0, bassStart);
-        bassGain.gain.linearRampToValueAtTime(0.15, bassStart + 0.03);
-        bassGain.gain.exponentialRampToValueAtTime(0.01, bassStart + 0.3);
-        
-        bassOscillator.connect(bassGain);
-        bassGain.connect(audioContext.destination);
-        
-        bassOscillator.start(bassStart);
-        bassOscillator.stop(bassStart + 0.3);
-      }, 200);
     } catch (err) {
       console.error("Error playing completion sound:", err);
     }
@@ -692,11 +664,14 @@ export default function Home() {
                   {orderedColumns.map((col) => {
                     const displayName = getColumnDisplayName(col.name);
                     const isCurrentSort = sortColumn === col.name;
+                    const isDescriptionEshop = col.name === "descripcion_eshop";
 
                     return (
                       <th
                         key={col.name}
-                        className="border-b border-border px-4 py-3 text-left font-medium text-foreground whitespace-nowrap cursor-pointer hover:bg-muted/80 transition-colors select-none"
+                        className={`border-b border-border px-4 py-3 text-left font-medium text-foreground whitespace-nowrap cursor-pointer hover:bg-muted/80 transition-colors select-none ${
+                          isDescriptionEshop ? "min-w-[500px] max-w-[800px]" : ""
+                        }`}
                         onClick={() => handleSort(col.name)}
                       >
                         <div className="flex items-center gap-2">
@@ -735,14 +710,25 @@ export default function Home() {
                       {orderedColumns.map((col) => (
                         <td
                           key={col.name}
-                          className="border-b border-border px-4 py-2"
+                          className={`border-b border-border px-4 py-2 ${
+                            col.name === "descripcion_eshop" ? "min-w-[500px] max-w-[800px]" : ""
+                          }`}
                         >
-                          <EditableCell
-                            value={row[col.name]}
-                            onSave={(newValue) =>
-                              handleCellUpdate(primaryKeyValue as string | number, col.name, newValue)
-                            }
-                          />
+                          {col.name === "descripcion_eshop" ? (
+                            <EditableDescriptionCell
+                              value={row[col.name]}
+                              onSave={(newValue) =>
+                                handleCellUpdate(primaryKeyValue as string | number, col.name, newValue)
+                              }
+                            />
+                          ) : (
+                            <EditableCell
+                              value={row[col.name]}
+                              onSave={(newValue) =>
+                                handleCellUpdate(primaryKeyValue as string | number, col.name, newValue)
+                              }
+                            />
+                          )}
                         </td>
                       ))}
                       <td className="border-b border-border px-4 py-2">
@@ -836,6 +822,77 @@ function EditableCell({
         <span className="text-muted-foreground italic">null</span>
       ) : (
         String(value)
+      )}
+    </div>
+  );
+}
+
+// Special editable cell for description eshop with better formatting
+function EditableDescriptionCell({
+  value,
+  onSave,
+}: {
+  value: string | number | boolean | null;
+  onSave: (value: string) => void;
+}) {
+  const [isEditing, setIsEditing] = useState(false);
+  const [editValue, setEditValue] = useState(String(value ?? ""));
+
+  const handleDoubleClick = () => {
+    setIsEditing(true);
+    setEditValue(String(value ?? ""));
+  };
+
+  const handleBlur = () => {
+    setIsEditing(false);
+    if (editValue !== String(value ?? "")) {
+      onSave(editValue);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+      // Ctrl/Cmd + Enter to save
+      setIsEditing(false);
+      if (editValue !== String(value ?? "")) {
+        onSave(editValue);
+      }
+    } else if (e.key === "Escape") {
+      setIsEditing(false);
+      setEditValue(String(value ?? ""));
+    }
+  };
+
+  if (isEditing) {
+    return (
+      <textarea
+        value={editValue}
+        onChange={(e) => setEditValue(e.target.value)}
+        onBlur={handleBlur}
+        onKeyDown={handleKeyDown}
+        autoFocus
+        rows={6}
+        className="w-full px-3 py-2 border border-primary rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 resize-y font-sans text-sm leading-relaxed"
+        placeholder="Escribí la descripción aquí..."
+      />
+    );
+  }
+
+  const textValue = value === null ? "" : String(value);
+  const isEmpty = !textValue || textValue.trim() === "";
+
+  return (
+    <div
+      onDoubleClick={handleDoubleClick}
+      className="cursor-pointer min-h-[80px] p-2 rounded-md hover:bg-muted/50 transition-colors"
+      title="Doble clic para editar"
+    >
+      {isEmpty ? (
+        <span className="text-muted-foreground italic text-sm">Sin descripción</span>
+      ) : (
+        <div className="text-sm leading-relaxed whitespace-pre-wrap break-words text-foreground">
+          {textValue}
+        </div>
       )}
     </div>
   );

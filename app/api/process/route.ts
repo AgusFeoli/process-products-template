@@ -232,12 +232,10 @@ async function processProduct(
 
   if (modelo) {
     const imageMatches = await resolveProductImages(productId, modelo, 5); // Get up to 5 images
-    console.log(`[ProcessProduct] Product ${productId} (modelo: "${modelo}"): ${imageMatches.length} imágenes encontradas`);
     if (imageMatches.length > 0) {
       primaryImagePath = imageMatches[0].imagePath; // First one is primary
       imagePaths = imageMatches.map(m => m.imagePath);
       imageModifyTime = imageMatches[0].imageModifyTime;
-      console.log(`[ProcessProduct] Product ${productId}: Imagen primaria = ${primaryImagePath}`);
 
       // 3. Download images for multimodal AI (limit to 3 to avoid token limits)
       const imagesToDownload = imageMatches.slice(0, 3); // Max 3 images for AI
@@ -247,8 +245,6 @@ async function processProduct(
           imageBuffers.push(buffer);
         }
       }
-    } else {
-      console.log(`[ProcessProduct] Product ${productId} (modelo: "${modelo}"): ⚠️  No se encontraron imágenes - imagen quedará NULL`);
     }
   }
 
@@ -302,11 +298,6 @@ async function processProduct(
        WHERE id = $4`,
       [newDescription, imagenValue, now, productId]
     );
-    if (imagePaths.length === 1) {
-      console.log(`[ProcessProduct] Product ${productId}: ✅ 1 imagen guardada: ${imagenValue}`);
-    } else {
-      console.log(`[ProcessProduct] Product ${productId}: ✅ ${imagePaths.length} imágenes guardadas (JSON array): ${imagenValue}`);
-    }
   } else {
     await sql(
       `UPDATE "${TARGET_TABLE}"
@@ -316,7 +307,6 @@ async function processProduct(
        WHERE id = $3`,
       [newDescription, now, productId]
     );
-    console.log(`[ProcessProduct] Product ${productId}: ⚠️  Imagen NO guardada (NULL) - no se encontraron imágenes`);
   }
 
   // Store all images JSON for AI cache tracking
