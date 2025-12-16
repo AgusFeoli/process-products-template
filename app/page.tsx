@@ -28,6 +28,7 @@ import { getColumnDisplayName, TABLE_COLUMN_ORDER } from "@/lib/column-mapping";
 import { Progress } from "@/components/ui/progress";
 import { Database, Upload, RefreshCw, Download, AlertCircle, Loader2, ArrowUp, ArrowDown, ArrowUpDown, Trash2, Sparkles, Square, FolderSync, Image, Settings } from "lucide-react";
 import { PromptConfig } from "@/components/prompt-config";
+import { DescriptionVariantsModal } from "@/components/description-variants-modal";
 
 // Sort direction type
 type SortDirection = "asc" | "desc" | null;
@@ -63,6 +64,14 @@ export default function Home() {
 
   // Prompt config state
   const [isPromptConfigOpen, setIsPromptConfigOpen] = useState(false);
+
+  // Description variants modal state
+  const [isVariantsModalOpen, setIsVariantsModalOpen] = useState(false);
+  const [currentVariantsProduct, setCurrentVariantsProduct] = useState<{
+    description: string;
+    productData: any;
+    primaryKey: string | number;
+  } | null>(null);
 
   // Image indexing state
   const [isIndexing, setIsIndexing] = useState(false);
@@ -277,6 +286,35 @@ export default function Home() {
     }
   };
 
+  const handleOpenVariantsModal = (
+    description: string,
+    primaryKey: string | number,
+    rowData: any
+  ) => {
+    // Convert row data to ProductData format
+    const productData = {
+      proveedor: rowData.proveedor,
+      modelo: rowData.modelo,
+      descripcion: rowData.descripcion,
+      composicion: rowData.composicion,
+      nuevo: rowData.nuevo,
+      preventa: rowData.preventa,
+      sale: rowData.sale,
+      outlet: rowData.outlet,
+      repite_color: rowData.repite_color,
+      prioridad: rowData.prioridad,
+      video: rowData.video,
+      imagen: rowData.imagen,
+    };
+
+    setCurrentVariantsProduct({
+      description: description || "",
+      productData,
+      primaryKey,
+    });
+    setIsVariantsModalOpen(true);
+  };
+
   // Fetch indexed image count on load
   useEffect(() => {
     const fetchIndexedCount = async () => {
@@ -480,20 +518,6 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleImportClick}
-              disabled={isImporting}
-            >
-              {isImporting ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Upload className="h-4 w-4" />
-              )}
-              <span className="ml-2">Importar</span>
-            </Button>
-
             <AlertDialog>
               <AlertDialogTrigger asChild>
                 <Button
@@ -529,23 +553,8 @@ export default function Home() {
               </AlertDialogContent>
             </AlertDialog>
 
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleRefresh}
-              disabled={isRefreshing}
-            >
-              <RefreshCw className={`h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
-              <span className="ml-2">Actualizar</span>
-            </Button>
-
-            <Button variant="outline" size="sm" onClick={handleExport}>
-              <Download className="h-4 w-4" />
-              <span className="ml-2">Exportar</span>
-            </Button>
-
-            {/* Image Indexing Button */}
-            <Button
+             {/* Image Indexing Button */}
+             <Button
               variant="outline"
               size="sm"
               onClick={handleStartIndexing}
@@ -562,40 +571,68 @@ export default function Home() {
               </span>
             </Button>
 
-            {/* AI Processing Button */}
-            <div className="flex items-center gap-2">
-              {isProcessingAI ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleStopProcessing}
-                  className="text-amber-600 hover:text-amber-700 hover:bg-amber-50"
-                >
-                  <Square className="h-4 w-4" />
-                  <span className="ml-2">Detener IA</span>
-                </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleImportClick}
+              disabled={isImporting}
+            >
+              {isImporting ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
-                <Button
-                  variant="default"
-                  size="sm"
-                  onClick={handleStartProcessing}
-                  disabled={!tableData?.rows.length}
-                  className="bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700"
-                >
-                  <Sparkles className="h-4 w-4" />
-                  <span className="ml-2">Procesar IA</span>
-                </Button>
+                <Upload className="h-4 w-4" />
               )}
+              <span className="ml-2">Importar</span>
+            </Button>
+
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleRefresh}
+              disabled={isRefreshing}
+            >
+              <RefreshCw className={`h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
+              <span className="ml-2">Actualizar</span>
+            </Button>
+
+            <Button variant="outline" size="sm" onClick={handleExport}>
+              <Download className="h-4 w-4" />
+              <span className="ml-2">Exportar</span>
+            </Button>
+
+            {/* AI Processing Button */}
+            {isProcessingAI ? (
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => setIsPromptConfigOpen(true)}
-                className="text-muted-foreground hover:text-foreground"
-                title="Configurar prompt de IA"
+                onClick={handleStopProcessing}
+                className="text-amber-600 hover:text-amber-700 hover:bg-amber-50"
               >
-                <Settings className="h-4 w-4" />
+                <Square className="h-4 w-4" />
+                <span className="ml-2">Detener IA</span>
               </Button>
-            </div>
+            ) : (
+              <Button
+                variant="default"
+                size="sm"
+                onClick={handleStartProcessing}
+                disabled={!tableData?.rows.length}
+                className="bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700"
+              >
+                <Sparkles className="h-4 w-4" />
+                <span className="ml-2">Procesar IA</span>
+              </Button>
+            )}
+
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setIsPromptConfigOpen(true)}
+              className="text-muted-foreground hover:text-foreground"
+              title="Configurar prompt de IA"
+            >
+              <Settings className="h-4 w-4" />
+            </Button>
           </div>
         </div>
 
@@ -653,6 +690,23 @@ export default function Home() {
           toast.success("Prompt guardado exitosamente");
         }}
       />
+
+      {/* Description Variants Modal */}
+      {currentVariantsProduct && (
+        <DescriptionVariantsModal
+          open={isVariantsModalOpen}
+          onOpenChange={setIsVariantsModalOpen}
+          originalDescription={currentVariantsProduct.description}
+          product={currentVariantsProduct.productData}
+          onSave={(selectedVariant) => {
+            handleCellUpdate(
+              currentVariantsProduct.primaryKey,
+              "descripcion_eshop",
+              selectedVariant
+            );
+          }}
+        />
+      )}
 
       {/* Full-screen Table */}
       <main className="flex-1 overflow-auto">
@@ -719,6 +773,9 @@ export default function Home() {
                               value={row[col.name]}
                               onSave={(newValue) =>
                                 handleCellUpdate(primaryKeyValue as string | number, col.name, newValue)
+                              }
+                              onOpenVariantsModal={() =>
+                                handleOpenVariantsModal(String(row[col.name] || ""), primaryKeyValue as string | number, row)
                               }
                             />
                           ) : (
@@ -831,9 +888,11 @@ function EditableCell({
 function EditableDescriptionCell({
   value,
   onSave,
+  onOpenVariantsModal,
 }: {
   value: string | number | boolean | null;
   onSave: (value: string) => void;
+  onOpenVariantsModal: () => void;
 }) {
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(String(value ?? ""));
@@ -884,14 +943,30 @@ function EditableDescriptionCell({
   return (
     <div
       onDoubleClick={handleDoubleClick}
-      className="cursor-pointer min-h-[80px] p-2 rounded-md hover:bg-muted/50 transition-colors"
+      className="group relative cursor-pointer min-h-[80px] p-2 rounded-md hover:bg-muted/50 transition-colors"
       title="Doble clic para editar"
     >
+      {/* AI Button - appears on hover */}
+      <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-10">
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenVariantsModal();
+          }}
+          className="h-7 w-7 p-0 bg-violet-600 hover:bg-violet-700 text-white hover:text-white cursor-pointer border-violet-600 hover:border-violet-700 shadow-sm"
+          title="Generar variantes con IA"
+        >
+          <Sparkles className="h-3 w-3" />
+        </Button>
+      </div>
+
       {isEmpty ? (
         <span className="text-muted-foreground italic text-sm">Sin descripción</span>
       ) : (
-        <div className="text-sm leading-relaxed whitespace-pre-wrap break-words text-foreground">
-          {textValue}
+        <div className="text-sm leading-relaxed whitespace-normal break-words text-foreground pr-10">
+          {textValue.replace(/\n+/g, ' ').trim()}
         </div>
       )}
     </div>
