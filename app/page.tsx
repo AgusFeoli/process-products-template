@@ -26,7 +26,8 @@ import {
 } from "./actions";
 import { getColumnDisplayName, TABLE_COLUMN_ORDER } from "@/lib/column-mapping";
 import { Progress } from "@/components/ui/progress";
-import { Database, Upload, RefreshCw, Download, AlertCircle, Loader2, ArrowUp, ArrowDown, ArrowUpDown, Trash2, Sparkles, Square, FolderSync, Image } from "lucide-react";
+import { Database, Upload, RefreshCw, Download, AlertCircle, Loader2, ArrowUp, ArrowDown, ArrowUpDown, Trash2, Sparkles, Square, FolderSync, Image, Settings } from "lucide-react";
+import { PromptConfig } from "@/components/prompt-config";
 
 // Sort direction type
 type SortDirection = "asc" | "desc" | null;
@@ -59,6 +60,9 @@ export default function Home() {
     withImage?: number;
     withoutImage?: number;
   } | null>(null);
+
+  // Prompt config state
+  const [isPromptConfigOpen, setIsPromptConfigOpen] = useState(false);
 
   // Image indexing state
   const [isIndexing, setIsIndexing] = useState(false);
@@ -315,6 +319,64 @@ export default function Home() {
     }
   };
 
+  // Generate a luxurious fashion-inspired completion sound
+  const playCompletionSound = useCallback(() => {
+    try {
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      
+      // Create a sophisticated chime with multiple harmonics for a luxurious feel
+      // Using a major chord progression (C-E-G) for elegance
+      const frequencies = [523.25, 659.25, 783.99]; // C5, E5, G5
+      const startTime = audioContext.currentTime;
+      
+      frequencies.forEach((freq, index) => {
+        const oscillator = audioContext.createOscillator();
+        const gainNode = audioContext.createGain();
+        
+        // Use a softer waveform for elegance
+        oscillator.type = "sine";
+        oscillator.frequency.value = freq;
+        
+        // Stagger the notes slightly for a cascading effect
+        const noteStart = startTime + (index * 0.08);
+        const noteDuration = 0.4;
+        
+        // Smooth attack and decay for luxury feel
+        gainNode.gain.setValueAtTime(0, noteStart);
+        gainNode.gain.linearRampToValueAtTime(0.25, noteStart + 0.05);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, noteStart + noteDuration);
+        
+        oscillator.connect(gainNode);
+        gainNode.connect(audioContext.destination);
+        
+        oscillator.start(noteStart);
+        oscillator.stop(noteStart + noteDuration);
+      });
+      
+      // Add a subtle reverb-like effect with a delayed lower note
+      setTimeout(() => {
+        const bassOscillator = audioContext.createOscillator();
+        const bassGain = audioContext.createGain();
+        
+        bassOscillator.type = "sine";
+        bassOscillator.frequency.value = 261.63; // C4 (one octave lower)
+        
+        const bassStart = audioContext.currentTime;
+        bassGain.gain.setValueAtTime(0, bassStart);
+        bassGain.gain.linearRampToValueAtTime(0.15, bassStart + 0.03);
+        bassGain.gain.exponentialRampToValueAtTime(0.01, bassStart + 0.3);
+        
+        bassOscillator.connect(bassGain);
+        bassGain.connect(audioContext.destination);
+        
+        bassOscillator.start(bassStart);
+        bassOscillator.stop(bassStart + 0.3);
+      }, 200);
+    } catch (err) {
+      console.error("Error playing completion sound:", err);
+    }
+  }, []);
+
   // AI Processing handlers
   const pollProcessingStatus = useCallback(async () => {
     try {
@@ -337,7 +399,9 @@ export default function Home() {
       const response = await fetch("/api/process", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "start" }),
+        body: JSON.stringify({ 
+          action: "start"
+        }),
       });
       const data = await response.json();
 
@@ -352,6 +416,8 @@ export default function Home() {
             setIsProcessingAI(false);
             await loadData();
             toast.success("Procesamiento IA completado");
+            // Play completion sound
+            playCompletionSound();
           }
         }, 2000);
       } else {
@@ -431,7 +497,7 @@ export default function Home() {
       />
 
       {/* Minimal Top Bar */}
-      <header className="flex-shrink-0 border-b border-border bg-background px-4 py-2">
+      <header className="shrink-0 border-b border-border bg-background px-4 py-2">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Database className="h-5 w-5 text-primary" />
@@ -525,28 +591,39 @@ export default function Home() {
             </Button>
 
             {/* AI Processing Button */}
-            {isProcessingAI ? (
+            <div className="flex items-center gap-2">
+              {isProcessingAI ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleStopProcessing}
+                  className="text-amber-600 hover:text-amber-700 hover:bg-amber-50"
+                >
+                  <Square className="h-4 w-4" />
+                  <span className="ml-2">Detener IA</span>
+                </Button>
+              ) : (
+                <Button
+                  variant="default"
+                  size="sm"
+                  onClick={handleStartProcessing}
+                  disabled={!tableData?.rows.length}
+                  className="bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700"
+                >
+                  <Sparkles className="h-4 w-4" />
+                  <span className="ml-2">Procesar IA</span>
+                </Button>
+              )}
               <Button
                 variant="outline"
                 size="sm"
-                onClick={handleStopProcessing}
-                className="text-amber-600 hover:text-amber-700 hover:bg-amber-50"
+                onClick={() => setIsPromptConfigOpen(true)}
+                className="text-muted-foreground hover:text-foreground"
+                title="Configurar prompt de IA"
               >
-                <Square className="h-4 w-4" />
-                <span className="ml-2">Detener IA</span>
+                <Settings className="h-4 w-4" />
               </Button>
-            ) : (
-              <Button
-                variant="default"
-                size="sm"
-                onClick={handleStartProcessing}
-                disabled={!tableData?.rows.length}
-                className="bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700"
-              >
-                <Sparkles className="h-4 w-4" />
-                <span className="ml-2">Procesar IA</span>
-              </Button>
-            )}
+            </div>
           </div>
         </div>
 
@@ -595,6 +672,15 @@ export default function Home() {
           </div>
         )}
       </header>
+
+      {/* Prompt Config Dialog */}
+      <PromptConfig
+        open={isPromptConfigOpen}
+        onOpenChange={setIsPromptConfigOpen}
+        onSave={() => {
+          toast.success("Prompt guardado exitosamente");
+        }}
+      />
 
       {/* Full-screen Table */}
       <main className="flex-1 overflow-auto">
@@ -743,7 +829,7 @@ function EditableCell({
   return (
     <div
       onDoubleClick={handleDoubleClick}
-      className="cursor-pointer min-h-[1.5rem] truncate max-w-[300px]"
+      className="cursor-pointer min-h-6 truncate max-w-[300px]"
       title={String(value ?? "")}
     >
       {value === null ? (

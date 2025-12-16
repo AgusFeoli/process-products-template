@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { neon } from "@neondatabase/serverless";
 import { downloadImageFromSftp } from "@/lib/ftp-service";
-import { resolveProductImage } from "@/lib/image-matcher";
+import { resolveProductImages } from "@/lib/image-matcher";
 import { generateProductDescription, type ProductData } from "@/lib/ai-service";
 
 // Force dynamic rendering - don't analyze during build
@@ -109,6 +109,9 @@ async function processAllBatches() {
   try {
     const sql = getSql();
     
+    // Get prompt template once at the start (will be passed to each product)
+    const promptTemplate = await getPromptTemplate();
+    
     // Get total count of products to process (ia = false or ia IS NULL)
     const countResult = await sql(
       `SELECT COUNT(*) as count FROM "${TARGET_TABLE}" WHERE ia IS NULL OR ia = false`
@@ -154,7 +157,7 @@ async function processAllBatches() {
         if (!isProcessing) break;
 
         try {
-          const result = await processProduct(product);
+          const result = await processProduct(product, promptTemplate);
           if (result.skipped) {
             processingStats.skipped++;
           } else {
@@ -185,9 +188,31 @@ async function processAllBatches() {
   }
 }
 
+// Get prompt template from database
+async function getPromptTemplate(): Promise<string | undefined> {
+  try {
+    const sql = getSql();
+    const result = await sql`
+      SELECT prompt_template
+      FROM ai_prompt_config
+      ORDER BY updated_at DESC, id DESC
+      LIMIT 1
+    `;
+    
+    if (result.length > 0 && result[0].prompt_template) {
+      return result[0].prompt_template as string;
+    }
+    return undefined; // Will use default from ai-service
+  } catch (error) {
+    console.error("Error fetching prompt template:", error);
+    return undefined; // Will use default from ai-service
+  }
+}
+
 // Process a single product
 async function processProduct(
-  product: Record<string, unknown>
+  product: Record<string, unknown>,
+  promptTemplate?: string
 ): Promise<{ skipped: boolean; hasImage: boolean }> {
   const productId = product.id as number;
   const modelo = String(product.modelo || "");
@@ -199,20 +224,32 @@ async function processProduct(
     return { skipped: true, hasImage: false };
   }
 
-  // 2. Resolve image using indexed DB (fast trigram search + cache)
-  let imagePath: string | null = null;
-  let imageBuffer: Buffer | null = null;
+  // 2. Resolve images using indexed DB (fast trigram search + cache)
+  let imagePaths: string[] = [];
+  let imageBuffers: Buffer[] = [];
+  let primaryImagePath: string | null = null;
   let imageModifyTime: Date | null = null;
 
   if (modelo) {
-      const imageMatch = await resolveProductImage(productId, modelo);
-      if (imageMatch) {
-        imagePath = imageMatch.imagePath;
-        imageModifyTime = imageMatch.imageModifyTime;
+    const imageMatches = await resolveProductImages(productId, modelo, 5); // Get up to 5 images
+    console.log(`[ProcessProduct] Product ${productId} (modelo: "${modelo}"): ${imageMatches.length} imágenes encontradas`);
+    if (imageMatches.length > 0) {
+      primaryImagePath = imageMatches[0].imagePath; // First one is primary
+      imagePaths = imageMatches.map(m => m.imagePath);
+      imageModifyTime = imageMatches[0].imageModifyTime;
+      console.log(`[ProcessProduct] Product ${productId}: Imagen primaria = ${primaryImagePath}`);
 
-        // 3. Download image for multimodal AI
-        imageBuffer = await downloadImageFromSftp(imagePath);
+      // 3. Download images for multimodal AI (limit to 3 to avoid token limits)
+      const imagesToDownload = imageMatches.slice(0, 3); // Max 3 images for AI
+      for (const match of imagesToDownload) {
+        const buffer = await downloadImageFromSftp(match.imagePath);
+        if (buffer) {
+          imageBuffers.push(buffer);
+        }
       }
+    } else {
+      console.log(`[ProcessProduct] Product ${productId} (modelo: "${modelo}"): ⚠️  No se encontraron imágenes - imagen quedará NULL`);
+    }
   }
 
   // 4. Build product data for AI
@@ -228,17 +265,34 @@ async function processProduct(
     repite_color: product.repite_color as string | null,
     prioridad: product.prioridad as string | number | null,
     video: product.video as string | null,
-    imagen: imagePath,
+    imagen: primaryImagePath, // Store primary image path
   };
 
-  // 5. Generate AI description (with image if available)
-  const newDescription = await generateProductDescription(productData, imageBuffer);
+  // 5. Generate AI description (with images if available)
+  const newDescription = await generateProductDescription(
+    productData, 
+    imageBuffers.length > 0 ? imageBuffers : null,
+    promptTemplate
+  );
 
-  // 6. Update product in database
+  // 7. Update product in database
   const now = new Date().toISOString();
   const sql = getSql();
 
-  if (imagePath) {
+  // Store all image paths as JSON array in the imagen column
+  // If multiple images, store as JSON array; if single, store as string; if none, store null
+  let imagenValue: string | null = null;
+  if (imagePaths.length > 0) {
+    if (imagePaths.length === 1) {
+      // Single image: store as plain string for backward compatibility
+      imagenValue = imagePaths[0];
+    } else {
+      // Multiple images: store as JSON array
+      imagenValue = JSON.stringify(imagePaths);
+    }
+  }
+
+  if (imagenValue) {
     await sql(
       `UPDATE "${TARGET_TABLE}"
        SET descripcion_eshop = $1,
@@ -246,8 +300,13 @@ async function processProduct(
            ia = true,
            updated_at = $3
        WHERE id = $4`,
-      [newDescription, imagePath, now, productId]
+      [newDescription, imagenValue, now, productId]
     );
+    if (imagePaths.length === 1) {
+      console.log(`[ProcessProduct] Product ${productId}: ✅ 1 imagen guardada: ${imagenValue}`);
+    } else {
+      console.log(`[ProcessProduct] Product ${productId}: ✅ ${imagePaths.length} imágenes guardadas (JSON array): ${imagenValue}`);
+    }
   } else {
     await sql(
       `UPDATE "${TARGET_TABLE}"
@@ -257,12 +316,16 @@ async function processProduct(
        WHERE id = $3`,
       [newDescription, now, productId]
     );
+    console.log(`[ProcessProduct] Product ${productId}: ⚠️  Imagen NO guardada (NULL) - no se encontraron imágenes`);
   }
 
-  // 7. Update AI cache/version tracking
-  await updateAiCache(productId, productUpdatedAt, imagePath, imageModifyTime);
+  // Store all images JSON for AI cache tracking
+  const allImagesJson = imagePaths.length > 0 ? JSON.stringify(imagePaths) : null;
 
-  return { skipped: false, hasImage: !!imageBuffer };
+  // 8. Update AI cache/version tracking
+  await updateAiCache(productId, productUpdatedAt, primaryImagePath, imageModifyTime, allImagesJson);
+
+  return { skipped: false, hasImage: imageBuffers.length > 0 };
 }
 
 // Check if product should be skipped based on cache
@@ -314,7 +377,8 @@ async function updateAiCache(
   productId: number,
   productUpdatedAt: string | null,
   imagePath: string | null,
-  imageModifyTime: Date | null
+  imageModifyTime: Date | null,
+  allImagesJson: string | null = null
 ): Promise<void> {
   try {
     const sql = getSql();

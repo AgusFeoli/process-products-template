@@ -27,52 +27,100 @@ export interface ProductImageMatch {
 }
 
 /**
- * Find the best matching image for a product based on its modelo (SKU).
+ * Find all matching images for a product based on its modelo (SKU).
  * Uses pg_trgm index for fast ILIKE searches.
+ * Returns images sorted by score (best first).
+ * 
+ * If modelo has a color suffix (e.g., "51701_9"), also searches for base modelo ("51701").
  * 
  * Scoring heuristics:
  * - Exact match (filename without extension = modelo): 100
  * - Exact match with _0 suffix: 95
  * - Exact match with _1, _2, etc suffix: 90
+ * - Base modelo match (when searching with color suffix): 85
  * - Contains match: 50 - penalty based on length difference
  */
-export async function findBestImageForModelo(
-  modelo: string
-): Promise<MatchedImage | null> {
+export async function findAllImagesForModelo(
+  modelo: string,
+  maxImages: number = 10
+): Promise<MatchedImage[]> {
   if (!modelo || modelo.trim() === "") {
-    return null;
+    return [];
   }
 
   const modeloLower = modelo.toLowerCase().trim();
   
+  // Extract base modelo if it has a color suffix (format: modelo_color, e.g., "51701_9")
+  // Pattern: ends with _ followed by digits
+  const colorSuffixMatch = modeloLower.match(/^(.+)_(\d+)$/);
+  const baseModelo = colorSuffixMatch ? colorSuffixMatch[1] : null;
+  const isColorVariant = baseModelo !== null;
+  
   try {
     const sql = getSql();
-    // Search for images that contain the modelo in their name
+    
+    // Build search patterns: always search for full modelo, and also base if it's a color variant
+    const searchPatterns: string[] = [`%${modeloLower}%`];
+    if (isColorVariant && baseModelo) {
+      searchPatterns.push(`%${baseModelo}%`);
+      console.log(`[ImageMatcher] Modelo con color detectado: "${modeloLower}" -> también buscando base: "${baseModelo}"`);
+    }
+    
+    // Search for images that contain any of the search patterns
     // Using pg_trgm index for fast ILIKE
-    const candidates = await sql`
-      SELECT 
-        id,
-        path,
-        name,
-        name_lower,
-        size,
-        modify_time
-      FROM sftp_images
-      WHERE name_lower ILIKE ${"%" + modeloLower + "%"}
-      LIMIT 50
-    `;
-
-    if (candidates.length === 0) {
-      return null;
+    // Build OR conditions for each pattern
+    let candidates;
+    if (searchPatterns.length === 1) {
+      candidates = await sql`
+        SELECT DISTINCT
+          id,
+          path,
+          name,
+          name_lower,
+          size,
+          modify_time
+        FROM sftp_images
+        WHERE name_lower ILIKE ${searchPatterns[0]}
+        LIMIT 100
+      `;
+    } else {
+      // Multiple patterns: use OR
+      candidates = await sql`
+        SELECT DISTINCT
+          id,
+          path,
+          name,
+          name_lower,
+          size,
+          modify_time
+        FROM sftp_images
+        WHERE name_lower ILIKE ${searchPatterns[0]}
+           OR name_lower ILIKE ${searchPatterns[1]}
+        LIMIT 100
+      `;
     }
 
-    // Score each candidate
-    let bestMatch: MatchedImage | null = null;
-    let bestScore = 0;
+    if (candidates.length === 0) {
+      console.log(`[ImageMatcher] No se encontraron candidatos para modelo: "${modeloLower}"`);
+      return [];
+    }
+    
+    console.log(`[ImageMatcher] Encontrados ${candidates.length} candidatos para modelo: "${modeloLower}"`);
+
+    // Score all candidates
+    const scoredMatches: MatchedImage[] = [];
+    const seenPaths = new Set<string>(); // Avoid duplicates
 
     for (const candidate of candidates) {
       const nameLower = candidate.name_lower as string;
       const nameWithoutExt = nameLower.slice(0, nameLower.lastIndexOf("."));
+      const path = candidate.path as string;
+      
+      // Skip if we've already processed this path
+      if (seenPaths.has(path)) {
+        continue;
+      }
+      seenPaths.add(path);
       
       let score = 0;
       let matchedBy = "contains";
@@ -87,10 +135,24 @@ export async function findBestImageForModelo(
         score = 95;
         matchedBy = "exact_primary";
       }
-      // Exact match with other suffixes (_1, _2, etc.)
+      // Exact match with other suffixes (_1, _2, etc.) for full modelo
       else if (/^.+_\d+$/.test(nameWithoutExt) && nameWithoutExt.startsWith(modeloLower + "_")) {
         score = 90;
         matchedBy = "exact_secondary";
+      }
+      // Base modelo match (when searching with color variant)
+      // e.g., modelo is "51701_9" and image is "51701_0.jpg" or "51701_1.jpg"
+      else if (isColorVariant && baseModelo && nameWithoutExt.startsWith(baseModelo + "_")) {
+        // Check if it's a numbered suffix (like _0, _1, _2)
+        const baseMatch = nameWithoutExt.match(new RegExp(`^${baseModelo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}_(\\d+)$`));
+        if (baseMatch) {
+          score = 85;
+          matchedBy = "base_modelo";
+        } else {
+          // Base modelo but not with numbered suffix
+          score = 70;
+          matchedBy = "base_modelo_contains";
+        }
       }
       // Contains match - score based on how close the length is
       else {
@@ -100,9 +162,9 @@ export async function findBestImageForModelo(
         matchedBy = "contains";
       }
 
-      if (score > bestScore) {
-        bestScore = score;
-        bestMatch = {
+      // Only include matches with score >= 30 (filter out very weak matches)
+      if (score >= 30) {
+        scoredMatches.push({
           id: candidate.id as number,
           path: candidate.path as string,
           name: candidate.name as string,
@@ -110,24 +172,44 @@ export async function findBestImageForModelo(
           modifyTime: candidate.modify_time ? new Date(candidate.modify_time as string) : null,
           score,
           matchedBy,
-        };
+        });
       }
     }
 
-    return bestMatch;
+    // Sort by score (descending) and return top matches
+    scoredMatches.sort((a, b) => b.score - a.score);
+    const result = scoredMatches.slice(0, maxImages);
+    
+    if (result.length > 0) {
+      console.log(`[ImageMatcher] Modelo "${modeloLower}": ${result.length} imágenes encontradas (mejor score: ${result[0].score}, ${result[0].matchedBy})`);
+    } else {
+      console.log(`[ImageMatcher] Modelo "${modeloLower}": No se encontraron imágenes con score >= 30`);
+    }
+    
+    return result;
   } catch (error) {
-    console.error(`Error finding image for modelo ${modelo}:`, error);
-    return null;
+    console.error(`Error finding images for modelo ${modelo}:`, error);
+    return [];
   }
 }
 
 /**
- * Get cached image match for a product.
- * Returns null if no cached match exists.
+ * Find the best matching image for a product (backward compatibility).
  */
-export async function getCachedProductImage(
+export async function findBestImageForModelo(
+  modelo: string
+): Promise<MatchedImage | null> {
+  const matches = await findAllImagesForModelo(modelo, 1);
+  return matches.length > 0 ? matches[0] : null;
+}
+
+/**
+ * Get all cached image matches for a product.
+ * Returns empty array if no cached matches exist.
+ */
+export async function getCachedProductImages(
   productId: number
-): Promise<ProductImageMatch | null> {
+): Promise<ProductImageMatch[]> {
   try {
     const sql = getSql();
     const result = await sql`
@@ -136,100 +218,135 @@ export async function getCachedProductImage(
         image_path,
         match_score,
         matched_by,
-        image_modify_time
+        image_modify_time,
+        is_primary
       FROM product_images
       WHERE product_id = ${productId}
-        AND is_primary = TRUE
-      LIMIT 1
+      ORDER BY is_primary DESC, match_score DESC
     `;
 
-    if (result.length === 0) {
-      return null;
-    }
-
-    return {
-      productId: result[0].product_id as number,
-      imagePath: result[0].image_path as string,
-      matchScore: result[0].match_score as number,
-      matchedBy: result[0].matched_by as string,
-      imageModifyTime: result[0].image_modify_time 
-        ? new Date(result[0].image_modify_time as string) 
+    return result.map((row) => ({
+      productId: row.product_id as number,
+      imagePath: row.image_path as string,
+      matchScore: row.match_score as number,
+      matchedBy: row.matched_by as string,
+      imageModifyTime: row.image_modify_time 
+        ? new Date(row.image_modify_time as string) 
         : null,
-    };
+    }));
   } catch (error) {
-    console.error(`Error getting cached image for product ${productId}:`, error);
-    return null;
+    console.error(`Error getting cached images for product ${productId}:`, error);
+    return [];
   }
 }
 
 /**
- * Save image match to cache (product_images table).
+ * Get cached primary image match for a product (backward compatibility).
+ */
+export async function getCachedProductImage(
+  productId: number
+): Promise<ProductImageMatch | null> {
+  const images = await getCachedProductImages(productId);
+  return images.length > 0 ? images[0] : null;
+}
+
+/**
+ * Save multiple image matches to cache (product_images table).
+ * The first image (highest score) is marked as primary.
+ */
+export async function saveProductImageMatches(
+  productId: number,
+  matches: MatchedImage[]
+): Promise<void> {
+  if (matches.length === 0) return;
+
+  try {
+    const sql = getSql();
+    
+    // First, delete existing matches for this product
+    await sql`DELETE FROM product_images WHERE product_id = ${productId}`;
+
+    // Insert all matches, marking the first one as primary
+    for (let i = 0; i < matches.length; i++) {
+      const match = matches[i];
+      await sql`
+        INSERT INTO product_images (
+          product_id, 
+          image_path, 
+          match_score, 
+          matched_by, 
+          image_modify_time,
+          is_primary,
+          matched_at
+        )
+        VALUES (
+          ${productId}, 
+          ${match.path}, 
+          ${match.score}, 
+          ${match.matchedBy}, 
+          ${match.modifyTime?.toISOString() || null}::timestamptz,
+          ${i === 0}, -- First image is primary
+          NOW()
+        )
+      `;
+    }
+  } catch (error) {
+    console.error(`Error saving image matches for product ${productId}:`, error);
+  }
+}
+
+/**
+ * Save single image match (backward compatibility).
  */
 export async function saveProductImageMatch(
   productId: number,
   match: MatchedImage
 ): Promise<void> {
-  try {
-    const sql = getSql();
-    await sql`
-      INSERT INTO product_images (
-        product_id, 
-        image_path, 
-        match_score, 
-        matched_by, 
-        image_modify_time,
-        is_primary,
-        matched_at
-      )
-      VALUES (
-        ${productId}, 
-        ${match.path}, 
-        ${match.score}, 
-        ${match.matchedBy}, 
-        ${match.modifyTime?.toISOString() || null}::timestamptz,
-        TRUE,
-        NOW()
-      )
-      ON CONFLICT (product_id, image_path) DO UPDATE SET
-        match_score = EXCLUDED.match_score,
-        matched_by = EXCLUDED.matched_by,
-        image_modify_time = EXCLUDED.image_modify_time,
-        matched_at = NOW()
-    `;
-  } catch (error) {
-    console.error(`Error saving image match for product ${productId}:`, error);
-  }
+  await saveProductImageMatches(productId, [match]);
 }
 
 /**
- * Resolve image for a product: use cache if available, otherwise find and cache.
+ * Resolve all images for a product: use cache if available, otherwise find and cache.
+ * Returns array of images sorted by score (best first).
  */
-export async function resolveProductImage(
+export async function resolveProductImages(
   productId: number,
-  modelo: string
-): Promise<ProductImageMatch | null> {
+  modelo: string,
+  maxImages: number = 5
+): Promise<ProductImageMatch[]> {
   // Check cache first
-  const cached = await getCachedProductImage(productId);
-  if (cached) {
+  const cached = await getCachedProductImages(productId);
+  if (cached.length > 0) {
     return cached;
   }
 
-  // Find best match
-  const match = await findBestImageForModelo(modelo);
-  if (!match) {
-    return null;
+  // Find all matches
+  const matches = await findAllImagesForModelo(modelo, maxImages);
+  if (matches.length === 0) {
+    return [];
   }
 
-  // Cache the result
-  await saveProductImageMatch(productId, match);
+  // Cache all results
+  await saveProductImageMatches(productId, matches);
 
-  return {
+  return matches.map((match) => ({
     productId,
     imagePath: match.path,
     matchScore: match.score,
     matchedBy: match.matchedBy,
     imageModifyTime: match.modifyTime,
-  };
+  }));
+}
+
+/**
+ * Resolve single image for a product (backward compatibility).
+ */
+export async function resolveProductImage(
+  productId: number,
+  modelo: string
+): Promise<ProductImageMatch | null> {
+  const images = await resolveProductImages(productId, modelo, 1);
+  return images.length > 0 ? images[0] : null;
 }
 
 /**
