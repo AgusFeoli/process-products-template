@@ -1,5 +1,93 @@
 import { createOpenAI } from "@ai-sdk/openai";
 import { generateText } from "ai";
+import { neon } from "@neondatabase/serverless";
+
+// Variable configuration interfaces
+interface ImageInstructionsConfig {
+  single: string;
+  multiple: string;
+}
+
+interface CTAInstructionsConfig {
+  nuevo: string;
+  preventa: string;
+  sale: string;
+  outlet: string;
+  default: string;
+}
+
+// Cache for variable configurations
+let configCache: {
+  imageInstructions?: ImageInstructionsConfig;
+  productContext?: string;
+  ctaInstructions?: CTAInstructionsConfig;
+  lastFetch?: number;
+} = {};
+
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+// Load variable configurations from database
+async function loadVariableConfigs(): Promise<{
+  imageInstructions?: ImageInstructionsConfig;
+  productContext?: string;
+  ctaInstructions?: CTAInstructionsConfig;
+}> {
+  // Check cache first
+  if (configCache.lastFetch && Date.now() - configCache.lastFetch < CACHE_TTL) {
+    return {
+      imageInstructions: configCache.imageInstructions,
+      productContext: configCache.productContext,
+      ctaInstructions: configCache.ctaInstructions,
+    };
+  }
+
+  try {
+    if (!process.env.DATABASE_URL) {
+      return {};
+    }
+
+    const sql = neon(process.env.DATABASE_URL);
+    
+    const result = await sql`
+      SELECT 
+        image_instructions_config,
+        product_context_config,
+        cta_instructions_config
+      FROM ai_prompt_config
+      ORDER BY updated_at DESC, id DESC
+      LIMIT 1
+    `.catch(() => {
+      // If columns don't exist, return empty
+      return [];
+    });
+
+    if (result.length > 0 && result[0]) {
+      const configs = {
+        imageInstructions: result[0].image_instructions_config as ImageInstructionsConfig | null,
+        productContext: result[0].product_context_config as string | null,
+        ctaInstructions: result[0].cta_instructions_config as CTAInstructionsConfig | null,
+      };
+
+      // Update cache
+      configCache = {
+        imageInstructions: configs.imageInstructions || undefined,
+        productContext: configs.productContext || undefined,
+        ctaInstructions: configs.ctaInstructions || undefined,
+        lastFetch: Date.now(),
+      };
+
+      return {
+        imageInstructions: configs.imageInstructions || undefined,
+        productContext: configs.productContext || undefined,
+        ctaInstructions: configs.ctaInstructions || undefined,
+      };
+    }
+  } catch (error) {
+    console.warn("Error loading variable configs:", error);
+  }
+
+  return {};
+}
 
 // Product data interface
 export interface ProductData {
@@ -47,7 +135,62 @@ function getVisionModelName(): string {
 }
 
 // Build the product context string
-function buildProductContext(product: ProductData): string {
+function buildProductContext(
+  product: ProductData,
+  customTemplate?: string
+): string {
+  // Use custom template if provided
+  if (customTemplate) {
+    let context = customTemplate;
+    
+    // Replace placeholders
+    if (product.proveedor) {
+      context = context.replace(/\{\{MARCA\}\}/g, `Marca/Proveedor: **${product.proveedor}**`);
+    } else {
+      context = context.replace(/\{\{MARCA\}\}/g, "");
+    }
+    
+    if (product.modelo) {
+      context = context.replace(/\{\{MODELO\}\}/g, `Modelo/SKU: **${product.modelo}**`);
+    } else {
+      context = context.replace(/\{\{MODELO\}\}/g, "");
+    }
+    
+    if (product.descripcion) {
+      context = context.replace(/\{\{DESCRIPCION\}\}/g, `Descripción original: **${product.descripcion}** *(Este es el nombre/título del producto)*`);
+    } else {
+      context = context.replace(/\{\{DESCRIPCION\}\}/g, "");
+    }
+    
+    if (product.composicion) {
+      context = context.replace(/\{\{COMPOSICION\}\}/g, `Composición/Materiales: **${product.composicion}**`);
+    } else {
+      context = context.replace(/\{\{COMPOSICION\}\}/g, "");
+    }
+    
+    // Status flags
+    const flags: string[] = [];
+    if (isTrue(product.nuevo)) flags.push("Producto Nuevo");
+    if (isTrue(product.preventa)) flags.push("Preventa");
+    if (isTrue(product.sale)) flags.push("En Oferta/Sale");
+    if (isTrue(product.outlet)) flags.push("Producto Outlet");
+    
+    const estadoText = flags.length > 0
+      ? `Estado: **${flags.join(", ")}** *(Por ej.: Producto Nuevo, Preventa, Edición Limitada, En Outlet, etc.)*`
+      : "";
+    context = context.replace(/\{\{ESTADO\}\}/g, estadoText);
+    
+    if (product.repite_color) {
+      context = context.replace(/\{\{COLOR\}\}/g, `Color: **${product.repite_color}**`);
+    } else {
+      context = context.replace(/\{\{COLOR\}\}/g, "");
+    }
+    
+    // Remove empty lines
+    return context.split("\n").filter(line => line.trim()).join("\n");
+  }
+  
+  // Default behavior
   const productInfo: string[] = [];
 
   if (product.proveedor) {
@@ -96,7 +239,7 @@ DATOS DEL PRODUCTO:
 {{PRODUCT_CONTEXT}}
 
 INSTRUCCIONES:  
-1. Escribí una descripción de 2 a 3 **párrafos cortos** (en total máximo 60 palabras).  
+1. Escribí una descripción en **texto continuo sin párrafos separados** (máximo 60 palabras). El texto debe fluir de forma continua, sin saltos de línea ni párrafos.  
 2. Empezá captando la atención con un tono elegante y aspiracional, adecuado a una marca exclusiva.  
 3. Destacá los **beneficios** y **características principales** del producto – su estilo, diseño y materiales – no solo las especificaciones técnicas frías. Mostrá qué lo hace especial y deseable.  
 4. Incluí detalles específicos del diseño y la calidad del producto, tal como se ven en las imágenes o se infieren de los datos (ej.: corte de la prenda, tipo de tela, detalles de terminación, funcionalidad). Usá frases breves y descriptivas para cada aspecto, manteniendo la fluidez del texto.  
@@ -114,10 +257,29 @@ INSTRUCCIONES:
 {{CTA_INSTRUCTIONS}}
 
 **DESCRIPCIÓN:**  
-*(A continuación, redactá la descripción siguiendo todas las instrucciones anteriores. No incluyas títulos ni etiquetas, solo el texto descriptivo en párrafos.)*`;
+*(A continuación, redactá la descripción siguiendo todas las instrucciones anteriores. No incluyas títulos ni etiquetas, solo el texto descriptivo en texto continuo sin párrafos separados ni saltos de línea.)*`;
 
 // Build CTA instructions based on product attributes
-function buildCTAInstructions(product: ProductData): string {
+function buildCTAInstructions(
+  product: ProductData,
+  customConfig?: CTAInstructionsConfig
+): string {
+  // Use custom config if provided
+  if (customConfig) {
+    const isNuevo = isTrue(product.nuevo);
+    const isPreventa = isTrue(product.preventa);
+    const isSale = isTrue(product.sale);
+    const isOutlet = isTrue(product.outlet);
+
+    // Priority order: Outlet > Sale > Preventa > Nuevo
+    if (isOutlet) return customConfig.outlet;
+    if (isSale) return customConfig.sale;
+    if (isPreventa) return customConfig.preventa;
+    if (isNuevo) return customConfig.nuevo;
+    return customConfig.default;
+  }
+  
+  // Default behavior
   const isNuevo = isTrue(product.nuevo);
   const isPreventa = isTrue(product.preventa);
   const isSale = isTrue(product.sale);
@@ -216,9 +378,21 @@ function buildCTAInstructions(product: ProductData): string {
   }
 
 // Build image instruction text
-function buildImageInstruction(imageCount: number): string {
+function buildImageInstruction(
+  imageCount: number,
+  customConfig?: ImageInstructionsConfig
+): string {
   if (imageCount === 0) return "";
   
+  // Use custom config if provided
+  if (customConfig) {
+    if (imageCount === 1) {
+      return customConfig.single.replace(/\{\{IMAGE_COUNT\}\}/g, "1");
+    }
+    return customConfig.multiple.replace(/\{\{IMAGE_COUNT\}\}/g, imageCount.toString());
+  }
+  
+  // Default behavior
   if (imageCount === 1) {
     return `
 [INSTRUCCIONES DE IMAGEN - solo si hay imágenes]  
@@ -238,15 +412,19 @@ function buildImageInstruction(imageCount: number): string {
 }
 
 // Build the final prompt from template
-function buildPrompt(
+async function buildPrompt(
   productContext: string,
   imageCount: number,
   product: ProductData,
   customTemplate?: string
-): string {
+): Promise<string> {
   const template = customTemplate || DEFAULT_PROMPT_TEMPLATE;
-  const imageInstruction = buildImageInstruction(imageCount);
-  const ctaInstructions = buildCTAInstructions(product);
+  
+  // Load variable configs
+  const configs = await loadVariableConfigs();
+  
+  const imageInstruction = buildImageInstruction(imageCount, configs.imageInstructions);
+  const ctaInstructions = buildCTAInstructions(product, configs.ctaInstructions);
   
   // Replace placeholders
   return template
@@ -262,7 +440,10 @@ export async function generateProductDescription(
   customPromptTemplate?: string
 ): Promise<string> {
   const client = getAIClient();
-  const productContext = buildProductContext(product);
+  
+  // Load variable configs to get custom product context template
+  const configs = await loadVariableConfigs();
+  const productContext = buildProductContext(product, configs.productContext);
   
   // Normalize to array
   const images = Array.isArray(imageBuffers) 
@@ -278,7 +459,7 @@ export async function generateProductDescription(
 
   // Text-only generation
   const model = client.chat(getModelName());
-  const prompt = buildPrompt(productContext, 0, product, customPromptTemplate);
+  const prompt = await buildPrompt(productContext, 0, product, customPromptTemplate);
 
   try {
     const result = await generateText({
@@ -288,7 +469,9 @@ export async function generateProductDescription(
       maxTokens: 400,
     });
 
-    return fixSpanishPunctuation(result.text.trim());
+    // Remove line breaks and replace with spaces, then fix punctuation
+    const cleanedText = result.text.replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim();
+    return fixSpanishPunctuation(cleanedText);
   } catch (error) {
     console.error("AI generation error:", error);
     throw new Error(
@@ -306,7 +489,7 @@ async function generateMultimodalDescription(
   customPromptTemplate?: string
 ): Promise<string> {
   const model = client.chat(getVisionModelName());
-  const prompt = buildPrompt(productContext, imageBuffers.length, product, customPromptTemplate);
+  const prompt = await buildPrompt(productContext, imageBuffers.length, product, customPromptTemplate);
 
   // Convert buffers to base64 data URLs
   const imageContents = imageBuffers.map(buffer => {
@@ -337,13 +520,15 @@ async function generateMultimodalDescription(
       maxTokens: 400,
     });
 
-    return fixSpanishPunctuation(result.text.trim());
+    // Remove line breaks and replace with spaces, then fix punctuation
+    const cleanedText = result.text.replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim();
+    return fixSpanishPunctuation(cleanedText);
   } catch (error) {
     // If multimodal fails, fall back to text-only
     console.warn("Multimodal generation failed, falling back to text-only:", error);
     
     const textModel = client.chat(getModelName());
-    const textPrompt = buildPrompt(productContext, 0, product, customPromptTemplate);
+    const textPrompt = await buildPrompt(productContext, 0, product, customPromptTemplate);
     
     const result = await generateText({
       model: textModel,
@@ -352,7 +537,9 @@ async function generateMultimodalDescription(
       maxTokens: 400,
     });
 
-    return fixSpanishPunctuation(result.text.trim());
+    // Remove line breaks and replace with spaces, then fix punctuation
+    const cleanedText = result.text.replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim();
+    return fixSpanishPunctuation(cleanedText);
   }
 }
 
@@ -504,6 +691,84 @@ function isTrue(value: string | boolean | null | undefined): boolean {
 }
 
 // Test AI connection
+export async function generateDescriptionVariants(
+  originalDescription: string,
+  product: ProductData,
+  count: number = 3
+): Promise<string[]> {
+  const client = getAIClient();
+  const model = client.chat(getModelName());
+
+  // Load variable configs to get custom product context template
+  const configs = await loadVariableConfigs();
+  const productContext = buildProductContext(product, configs.productContext);
+
+  const prompt = `Basándote en esta descripción existente y el contexto del producto, generá ${count} variantes diferentes de la descripción para e-commerce.
+
+**DESCRIPCIÓN ORIGINAL:**
+${originalDescription}
+
+**CONTEXTO DEL PRODUCTO:**
+${productContext}
+
+**INSTRUCCIONES PARA LAS VARIACIONES:**
+1. Cada variante debe ser única y diferente de la original
+2. Mantener el mismo tono elegante y aspiracional
+3. Destacar diferentes aspectos del producto en cada variante
+4. **IMPORTANTE: MANTENER LA MISMA ESTRUCTURA** de la descripción original (mismo número de párrafos, misma organización, misma longitud aproximada)
+5. Solo variar el contenido, las palabras y las frases, pero respetando la estructura original
+6. Mantener la información esencial (materiales, diseño, beneficios)
+7. Usar español rioplatense profesional
+8. No incluir emojis ni caracteres especiales
+9. Cada variante debe ser convincente y atractiva
+10. Basarse en las mismas instrucciones y contexto que la descripción original
+
+**FORMATO DE RESPUESTA:**
+Devolvé exactamente ${count} variantes separadas por "---VARIANTE---" (sin incluir este texto en las variantes finales).
+
+VARIANTE 1:
+[texto de la variante 1]
+
+---VARIANTE---
+
+VARIANTE 2:
+[texto de la variante 2]
+
+---VARIANTE---
+
+VARIANTE 3:
+[texto de la variante 3]`;
+
+  try {
+    const result = await generateText({
+      model,
+      prompt,
+      // @ts-expect-error - maxTokens is supported by the AI SDK but types may not reflect it
+      maxTokens: 1200, // More tokens for multiple variants
+    });
+
+    const text = result.text.trim();
+
+    // Split by the separator and clean up
+    const variants = text
+      .split('---VARIANTE---')
+      .map(v => v.trim())
+      .filter(v => v.length > 0)
+      // Remove "VARIANTE X:" prefixes
+      .map(v => v.replace(/^VARIANTE \d+:\s*/i, '').trim())
+      // Fix Spanish punctuation
+      .map(v => fixSpanishPunctuation(v));
+
+    // Ensure we return exactly the requested count, taking the first ones if more were generated
+    return variants.slice(0, count);
+  } catch (error) {
+    console.error("AI variants generation error:", error);
+    throw new Error(
+      `Failed to generate variants: ${error instanceof Error ? error.message : "Unknown error"}`
+    );
+  }
+}
+
 export async function testAIConnection(): Promise<{ success: boolean; message: string }> {
   try {
     const client = getAIClient();
