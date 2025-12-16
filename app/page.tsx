@@ -29,11 +29,14 @@ import { Progress } from "@/components/ui/progress";
 import { Database, Upload, RefreshCw, Download, AlertCircle, Loader2, ArrowUp, ArrowDown, ArrowUpDown, Trash2, Sparkles, Square, FolderSync, Image, Settings } from "lucide-react";
 import { PromptConfig } from "@/components/prompt-config";
 import { DescriptionVariantsModal } from "@/components/description-variants-modal";
+import { Login } from "@/components/login";
 
 // Sort direction type
 type SortDirection = "asc" | "desc" | null;
 
 export default function Home() {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isCheckingAuth, setIsCheckingAuth] = useState(true);
   const [tableData, setTableData] = useState<TableData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -119,6 +122,28 @@ export default function Home() {
       setSortColumn(columnName);
       setSortDirection("asc");
     }
+  };
+
+  // Check authentication on mount
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const response = await fetch("/api/auth/check");
+        const data = await response.json();
+        if (data.authenticated) {
+          setIsAuthenticated(true);
+        }
+      } catch (error) {
+        console.error("Error checking authentication:", error);
+      } finally {
+        setIsCheckingAuth(false);
+      }
+    };
+    checkAuth();
+  }, []);
+
+  const handleLoginSuccess = () => {
+    setIsAuthenticated(true);
   };
 
   // Sorted rows
@@ -458,6 +483,22 @@ export default function Home() {
       toast.error(err instanceof Error ? err.message : "Error al detener procesamiento");
     }
   };
+
+  // Show login if not authenticated
+  if (isCheckingAuth) {
+    return (
+      <div className="h-screen bg-background flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <Loader2 className="h-10 w-10 text-primary animate-spin" />
+          <p className="text-muted-foreground">Verificando autenticación...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <Login onLoginSuccess={handleLoginSuccess} />;
+  }
 
   // Loading state
   if (isLoading) {
