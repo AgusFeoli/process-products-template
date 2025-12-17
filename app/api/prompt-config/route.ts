@@ -199,22 +199,25 @@ DATOS DEL PRODUCTO:
 
 INSTRUCCIONES:  
 1. Escribí una descripción de 2 a 3 **párrafos cortos** (en total máximo 60 palabras).  
-2. Destacá los **beneficios** y **características principales** del producto – su estilo, diseño y materiales – no solo las especificaciones técnicas frías. Mostrá qué lo hace especial y deseable.  
-3. Incluí detalles específicos del diseño y la calidad del producto, tal como se ven en las imágenes o se infieren de los datos (ej.: corte de la prenda, tipo de tela, detalles de terminación, funcionalidad). Usá frases breves y descriptivas para cada aspecto, manteniendo la fluidez del texto.  
-4. Si se proporciona información sobre la **composición o materiales**, mencionála de forma clara y atractiva. Podés integrarla al final de la descripción (ej.: "Confeccionado en algodón y lino de alta calidad", o "Composición: 100% cuero genuino").  
-5. **No** incluyas información sobre el precio, descuentos ni promociones en la descripción. (Esos datos se muestran por separado en el e-commerce).  
-6. Si el producto está en oferta, liquidación u outlet, **no** lo menciones en la descripción. (Evitá frases como "precio rebajado" o similares).  
-7. **No** uses emojis ni caracteres especiales innecesarios. Mantené un estilo profesional y sofisticado.  
-8. **No** incluyas referencias a "imágenes" o comandos; la descripción debe leerse como un texto escrito por un redactor humano, no por una IA siguiendo instrucciones.  
-9. **SOBRE EL CALL-TO-ACTION (CTA)**: 
+2. **IMPORTANTE - INICIO DE LA DESCRIPCIÓN**: La descripción debe empezar **DIRECTAMENTE** con la descripción del producto, sin frases imperativas ni llamados a la acción. **NO** uses verbos en imperativo al inicio como "Elevá", "Descubrí", "Sumá", "Completá", etc. Empezá describiendo el producto directamente (ej.: "Zuecos en cuero negro texturado..." en lugar de "Elevá tu estilo con estos zuecos...").  
+3. Destacá los **beneficios** y **características principales** del producto – su estilo, diseño y materiales – no solo las especificaciones técnicas frías. Mostrá qué lo hace especial y deseable.  
+4. Incluí detalles específicos del diseño y la calidad del producto, tal como se ven en las imágenes o se infieren de los datos (ej.: corte de la prenda, tipo de tela, detalles de terminación, funcionalidad). Usá frases breves y descriptivas para cada aspecto, manteniendo la fluidez del texto.  
+5. Si se proporciona información sobre la **composición o materiales**, mencionála de forma clara y atractiva. Podés integrarla al final de la descripción (ej.: "Confeccionado en algodón y lino de alta calidad", o "Composición: 100% cuero genuino").  
+6. **No** incluyas información sobre el precio, descuentos ni promociones en la descripción. (Esos datos se muestran por separado en el e-commerce).  
+7. Si el producto está en oferta, liquidación u outlet, **no** lo menciones en la descripción. (Evitá frases como "precio rebajado" o similares).  
+8. **No** uses emojis ni caracteres especiales innecesarios. Mantené un estilo profesional y sofisticado.  
+9. **No** incluyas referencias a "imágenes" o comandos; la descripción debe leerse como un texto escrito por un redactor humano, no por una IA siguiendo instrucciones.  
+10. **SOBRE EL CALL-TO-ACTION (CTA)**: 
     - El CTA es **OPCIONAL**. Solo incluilo si realmente suma valor y urgencia a la descripción.
+    - **IMPORTANTE**: El CTA debe ir **ÚNICAMENTE AL FINAL** de la descripción, después de todos los párrafos descriptivos. **NO** incluyas ningún CTA al principio ni en el medio de la descripción.
+    - **NO** uses verbos en imperativo (como "Elevá", "Descubrí", "Sumá", "Completá", "Llevate", etc.) en los párrafos descriptivos. Estos verbos solo pueden aparecer en el CTA final, si decidís incluirlo.
     - Si la descripción ya es convincente y completa, podés finalizarla sin CTA.
     - Si decidís incluir un CTA, debe ser creativo y variado.
     - El CTA debe estar en español rioplatense y enfatizar **exclusividad** y **urgencia** cuando sea apropiado.
 {{CTA_INSTRUCTIONS}}
 
 **DESCRIPCIÓN:**  
-*(A continuación, redactá la descripción siguiendo todas las instrucciones anteriores. No incluyas títulos ni etiquetas, solo el texto descriptivo en párrafos.)*`;
+*(A continuación, redactá la descripción siguiendo todas las instrucciones anteriores. Primero escribí los párrafos descriptivos (2 a 3 párrafos cortos). Si decidís incluir un CTA, debe ir ÚNICAMENTE al final, después de todos los párrafos descriptivos. No incluyas títulos ni etiquetas, solo el texto descriptivo en párrafos seguido opcionalmente por el CTA al final.)*`;
 
     // Default variable configurations
     const defaultImageInstructions = {
