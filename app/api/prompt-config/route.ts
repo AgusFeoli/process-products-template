@@ -199,16 +199,14 @@ DATOS DEL PRODUCTO:
 
 INSTRUCCIONES:  
 1. Escribí una descripción de 2 a 3 **párrafos cortos** (en total máximo 60 palabras).  
-2. Empezá captando la atención con un tono elegante y aspiracional, adecuado a una marca exclusiva.  
-3. Destacá los **beneficios** y **características principales** del producto – su estilo, diseño y materiales – no solo las especificaciones técnicas frías. Mostrá qué lo hace especial y deseable.  
-4. Incluí detalles específicos del diseño y la calidad del producto, tal como se ven en las imágenes o se infieren de los datos (ej.: corte de la prenda, tipo de tela, detalles de terminación, funcionalidad). Usá frases breves y descriptivas para cada aspecto, manteniendo la fluidez del texto.  
-5. Si se proporciona información sobre la **composición o materiales**, mencionála de forma clara y atractiva. Podés integrarla al final de la descripción (ej.: "Confeccionado en algodón y lino de alta calidad", o "Composición: 100% cuero genuino").  
-6. **No** incluyas información sobre el precio, descuentos ni promociones en la descripción. (Esos datos se muestran por separado en el e-commerce).  
-7. Si el producto está en oferta, liquidación u outlet, **no** lo menciones en la descripción. (Evitá frases como "precio rebajado" o similares).  
-8. Si el producto es nuevo, de temporada actual o una **edición limitada/exclusiva**, podés mencionarlo sutilmente para generar entusiasmo (ej.: "nueva colección", "edición especial de la temporada"), pero sin exagerar ni distraer de la descripción principal.  
-9. **No** uses emojis ni caracteres especiales innecesarios. Mantené un estilo profesional y sofisticado.  
-10. **No** incluyas referencias a "imágenes" o comandos; la descripción debe leerse como un texto escrito por un redactor humano, no por una IA siguiendo instrucciones.  
-11. **SOBRE EL CALL-TO-ACTION (CTA)**: 
+2. Destacá los **beneficios** y **características principales** del producto – su estilo, diseño y materiales – no solo las especificaciones técnicas frías. Mostrá qué lo hace especial y deseable.  
+3. Incluí detalles específicos del diseño y la calidad del producto, tal como se ven en las imágenes o se infieren de los datos (ej.: corte de la prenda, tipo de tela, detalles de terminación, funcionalidad). Usá frases breves y descriptivas para cada aspecto, manteniendo la fluidez del texto.  
+4. Si se proporciona información sobre la **composición o materiales**, mencionála de forma clara y atractiva. Podés integrarla al final de la descripción (ej.: "Confeccionado en algodón y lino de alta calidad", o "Composición: 100% cuero genuino").  
+5. **No** incluyas información sobre el precio, descuentos ni promociones en la descripción. (Esos datos se muestran por separado en el e-commerce).  
+6. Si el producto está en oferta, liquidación u outlet, **no** lo menciones en la descripción. (Evitá frases como "precio rebajado" o similares).  
+7. **No** uses emojis ni caracteres especiales innecesarios. Mantené un estilo profesional y sofisticado.  
+8. **No** incluyas referencias a "imágenes" o comandos; la descripción debe leerse como un texto escrito por un redactor humano, no por una IA siguiendo instrucciones.  
+9. **SOBRE EL CALL-TO-ACTION (CTA)**: 
     - El CTA es **OPCIONAL**. Solo incluilo si realmente suma valor y urgencia a la descripción.
     - Si la descripción ya es convincente y completa, podés finalizarla sin CTA.
     - Si decidís incluir un CTA, debe ser creativo y variado.
@@ -241,56 +239,28 @@ INSTRUCCIONES:
     const defaultCtaInstructions = {
       nuevo: `**INSTRUCCIONES ESPECÍFICAS PARA EL CTA (Call to Action):**
 - El producto está marcado como **NUEVO**.
-- El CTA debe enfatizar **novedad**, **exclusividad**, **estar a la vanguardia** y **ser de los primeros**.
+- El CTA debe enfatizar **novedad**, **exclusividad** y **estar a la vanguardia**.
 - Ejemplos de CTAs apropiados en rioplatense (usá como inspiración, pero creá el tuyo propio):
   *"Descubrí esta novedad exclusiva"*
-  *"Sé de los primeros en tenerlo"*
-  *"Llevate el tuyo, es edición nueva"*
   *"No te pierdas esta pieza única"*
   *"Sumalo a tu colección, es tendencia"*
-  *"Está nuevo, descubrilo primero"*
   *"Novedad exclusiva, llevatela ya"*
-  *"Sé la primera en tenerlo"*
+  *"Sumalo a tu colección"*
+  *"Completá tu look con esta pieza"*
 - Variá completamente el CTA. Sé creativo y evita repetir estructuras similares.`,
       preventa: `**INSTRUCCIONES ESPECÍFICAS PARA EL CTA (Call to Action):**
 - El producto está marcado como **PREVENTA**.
-- El CTA debe enfatizar **reservar**, **asegurar**, **anticiparse** y **ser de los primeros**.
+- El CTA debe enfatizar **reservar**, **asegurar** y **anticiparse**.
 - Ejemplos de CTAs apropiados en rioplatense (usá como inspiración, pero creá el tuyo propio):
   *"Reservá el tuyo ahora y asegurate de tenerlo"*
-  *"Sé de los primeros en llevártelo"*
   *"Anticipate y reservalo ya"*
   *"Asegurá tu pieza, reservalo ahora"*
   *"No te quedes sin el tuyo, reservalo"*
   *"Reservalo antes que se agote"*
-  *"Asegurá tu lugar, es preventa"*
   *"Anticipate y llevatelo primero"*
 - Variá completamente el CTA. Sé creativo y evita repetir estructuras similares.`,
-      sale: `**INSTRUCCIONES ESPECÍFICAS PARA EL CTA (Call to Action):**
-- El producto está marcado como **SALE** (en oferta).
-- El CTA debe enfatizar **oportunidad**, **aprovechar la oferta** y **no perder el momento**.
-- Ejemplos de CTAs apropiados en rioplatense (usá como inspiración, pero creá el tuyo propio):
-  *"¡Aprovechá esta oferta especial!"*
-  *"No dejes pasar esta oportunidad"*
-  *"Sumalo a tu guardarropa, es tu momento"*
-  *"Llevatelo ahora, está en oferta"*
-  *"Aprovechá el precio especial"*
-  *"No te pierdas esta oportunidad única"*
-  *"Hacelo tuyo mientras está en oferta"*
-  *"Es el momento ideal para sumarlo"*
-- Variá completamente el CTA. Sé creativo y evita repetir estructuras similares. El CTA de SALE debe ser diferente al de OUTLET.`,
-      outlet: `**INSTRUCCIONES ESPECÍFICAS PARA EL CTA (Call to Action):**
-- El producto está marcado como **OUTLET** (liquidación final).
-- El CTA debe enfatizar **última oportunidad**, **stock limitado**, **no volver a encontrar** y **liquidación final**.
-- Ejemplos de CTAs apropiados en rioplatense (usá como inspiración, pero creá el tuyo propio):
-  *"¡Última oportunidad! No volverás a encontrarlo"*
-  *"Stock limitado, no te quedes sin el tuyo"*
-  *"Liquidación final, aprovechá antes de que se agote"*
-  *"Últimas unidades, no te lo pierdas"*
-  *"Esta es tu última chance, llevatelo ya"*
-  *"No volverás a verlo a este precio"*
-  *"Aprovechá esta liquidación, quedan pocos"*
-  *"Última oportunidad de tenerlo"*
-- Variá completamente el CTA. Sé creativo y evita repetir estructuras similares.`,
+      sale: `**INSTRUCCIONES ESPECÍFICAS PARA EL CTA (Call to Action):**`,
+      outlet: `**INSTRUCCIONES ESPECÍFICAS PARA EL CTA (Call to Action):**`,
       default: `**INSTRUCCIONES ESPECÍFICAS PARA EL CTA (Call to Action):**
 - El CTA debe enfatizar **exclusividad** y **urgencia** de adquirir el producto.
 - Ejemplos de CTAs apropiados en rioplatense (usá como inspiración, pero creá el tuyo propio):
