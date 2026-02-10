@@ -21,12 +21,13 @@ import {
   updateCell,
   deleteRow,
   deleteAllRows,
-  exportCsv,
+  exportXlsx,
   type TableData,
 } from "./actions";
 import { getColumnDisplayName, TABLE_COLUMN_ORDER } from "@/lib/column-mapping";
 import { Progress } from "@/components/ui/progress";
-import { Database, Upload, RefreshCw, Download, AlertCircle, Loader2, ArrowUp, ArrowDown, ArrowUpDown, Trash2, Sparkles, Square, FolderSync, Image, Settings } from "lucide-react";
+import { Database, Upload, RefreshCw, Download, AlertCircle, Loader2, ArrowUp, ArrowDown, ArrowUpDown, Trash2, Sparkles, Square, FolderSync, Image, Settings, Users } from "lucide-react";
+import Link from "next/link";
 import { PromptConfig } from "@/components/prompt-config";
 import { DescriptionVariantsModal } from "@/components/description-variants-modal";
 import { Login } from "@/components/login";
@@ -269,13 +270,21 @@ export default function Home() {
   };
 
   const handleExport = async () => {
-    const result = await exportCsv();
-    if (result.success && result.csv) {
-      const blob = new Blob([result.csv], { type: "text/csv;charset=utf-8;" });
+    const result = await exportXlsx();
+    if (result.success && result.base64) {
+      const byteCharacters = atob(result.base64);
+      const byteNumbers = new Array(byteCharacters.length);
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+      const blob = new Blob([byteArray], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = result.filename || "export.csv";
+      link.download = result.filename || "export.xlsx";
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -542,7 +551,7 @@ export default function Home() {
       <input
         ref={fileInputRef}
         type="file"
-        accept=".csv"
+        accept=".xlsx,.xls,.csv"
         onChange={handleFileChange}
         className="hidden"
       />
@@ -559,6 +568,17 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-2">
+            <Link href="/proveedores">
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50"
+              >
+                <Users className="h-4 w-4" />
+                <span className="ml-2">Proveedores</span>
+              </Button>
+            </Link>
+
             <AlertDialog>
               <AlertDialogTrigger asChild>
                 <Button
@@ -847,7 +867,7 @@ export default function Home() {
 
             {tableData.rows.length === 0 && (
               <div className="flex items-center justify-center h-64 text-muted-foreground">
-                No hay datos en la tabla. Importa un CSV para agregar productos.
+                No hay datos en la tabla. Importá un archivo Excel (.xlsx) para agregar productos.
               </div>
             )}
           </div>
