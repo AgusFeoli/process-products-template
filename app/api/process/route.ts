@@ -3,6 +3,7 @@ import { neon } from "@neondatabase/serverless";
 import { downloadImageFromSftp } from "@/lib/ftp-service";
 import { resolveProductImages } from "@/lib/image-matcher";
 import { generateProductDescription, type ProductData } from "@/lib/ai-service";
+import { getSkipAiProveedorNames } from "@/lib/proveedores-db";
 
 // Force dynamic rendering - don't analyze during build
 export const dynamic = 'force-dynamic';
@@ -20,14 +21,24 @@ const TARGET_TABLE = process.env.TARGET_TABLE || "products";
 const BATCH_SIZE = 50;
 const AI_VERSION = "2.0"; // Increment when prompt/model changes
 
+// Skipped products tracking
+interface SkippedProduct {
+  id: number;
+  modelo: string;
+  proveedor: string;
+  descripcion: string;
+}
+
 // Processing state (in-memory for this instance)
 let isProcessing = false;
+let skippedByProviderList: SkippedProduct[] = [];
 let processingStats = {
   total: 0,
   processed: 0,
   success: 0,
   errors: 0,
   skipped: 0,
+  skippedByProvider: 0,
   currentBatch: 0,
   totalBatches: 0,
   lastError: "",
@@ -41,6 +52,7 @@ export async function GET() {
   return NextResponse.json({
     isProcessing,
     stats: processingStats,
+    skippedByProviderList: !isProcessing ? skippedByProviderList : undefined,
   });
 }
 
@@ -76,12 +88,14 @@ export async function POST(request: NextRequest) {
 
   // Start background processing
   isProcessing = true;
+  skippedByProviderList = [];
   processingStats = {
     total: 0,
     processed: 0,
     success: 0,
     errors: 0,
     skipped: 0,
+    skippedByProvider: 0,
     currentBatch: 0,
     totalBatches: 0,
     lastError: "",
@@ -108,10 +122,19 @@ export async function POST(request: NextRequest) {
 async function processAllBatches() {
   try {
     const sql = getSql();
-    
+
     // Get prompt template once at the start (will be passed to each product)
     const promptTemplate = await getPromptTemplate();
-    
+
+    // Get skip_ai provider names (normalized to lowercase for comparison)
+    let skipAiProviders: string[] = [];
+    try {
+      const names = await getSkipAiProveedorNames();
+      skipAiProviders = names.map((n) => n.toLowerCase().trim());
+    } catch (err) {
+      console.warn("Could not load skip_ai providers:", err);
+    }
+
     // Get total count of products to process (ia = false or ia IS NULL)
     const countResult = await sql(
       `SELECT COUNT(*) as count FROM "${TARGET_TABLE}" WHERE ia IS NULL OR ia = false`
@@ -155,6 +178,26 @@ async function processAllBatches() {
       // Process each product in the batch
       for (const product of batch) {
         if (!isProcessing) break;
+
+        // Check if product's provider is in the skip_ai list
+        const productProveedor = String(product.proveedor || "").toLowerCase().trim();
+        if (productProveedor && skipAiProviders.includes(productProveedor)) {
+          // Skip this product - mark as processed (ia = true) but don't generate description
+          const now = new Date().toISOString();
+          await sql(
+            `UPDATE "${TARGET_TABLE}" SET ia = true, updated_at = $1 WHERE id = $2`,
+            [now, product.id]
+          );
+          skippedByProviderList.push({
+            id: product.id as number,
+            modelo: String(product.modelo || ""),
+            proveedor: String(product.proveedor || ""),
+            descripcion: String(product.descripcion || ""),
+          });
+          processingStats.skippedByProvider++;
+          processingStats.processed++;
+          continue;
+        }
 
         try {
           const result = await processProduct(product, promptTemplate);
