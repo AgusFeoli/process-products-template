@@ -98,11 +98,13 @@ export async function importProveedores(
 
     if (fileName.endsWith(".xlsx") || fileName.endsWith(".xls")) {
       const arrayBuffer = await file.arrayBuffer();
-      const workbook = XLSX.read(arrayBuffer, { type: "array" });
+      const uint8 = new Uint8Array(arrayBuffer);
+      const workbook = XLSX.read(uint8, { type: "array" });
       const firstSheetName = workbook.SheetNames[0];
       const worksheet = workbook.Sheets[firstSheetName];
       const data = XLSX.utils.sheet_to_json<(string | number | null)[]>(worksheet, {
         header: 1,
+        defval: null,
       });
 
       if (data.length < 2) {
@@ -113,8 +115,8 @@ export async function importProveedores(
       }
 
       // Find column indices from headers
-      const headers = (data[0] as string[]).map((h) =>
-        String(h || "")
+      const headers = (data[0] as (string | number | null)[]).map((h) =>
+        String(h ?? "")
           .trim()
           .toLowerCase()
       );
@@ -139,9 +141,9 @@ export async function importProveedores(
 
         const codigo = codigoIdx >= 0 ? Number(row[codigoIdx]) : 0;
         const nombre =
-          nombreIdx >= 0 ? String(row[nombreIdx] || "").trim() : "";
+          nombreIdx >= 0 ? String(row[nombreIdx] ?? "").trim() : "";
         const tipo =
-          tipoIdx >= 0 ? String(row[tipoIdx] || "").trim() : "";
+          tipoIdx >= 0 ? String(row[tipoIdx] ?? "").trim() : "";
 
         if (codigo && nombre) {
           proveedores.push({ codigo, nombre, tipo });
@@ -243,6 +245,26 @@ function parseCsvLine(line: string): string[] {
 
   result.push(current.trim());
   return result;
+}
+
+export async function removeAllProveedores(): Promise<{
+  success: boolean;
+  deletedCount?: number;
+  error?: string;
+}> {
+  try {
+    const result = await deleteAllProveedoresDb();
+    return { success: true, deletedCount: result.deletedCount };
+  } catch (error) {
+    console.error("Delete all proveedores error:", error);
+    return {
+      success: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Error al eliminar todos los proveedores",
+    };
+  }
 }
 
 export async function toggleSkipAi(
