@@ -40,23 +40,22 @@ export const XLSX_EXPORT_ORDER = [
 // Keep CSV_EXPORT_ORDER as alias for backward compatibility
 export const CSV_EXPORT_ORDER = XLSX_EXPORT_ORDER;
 
-// DB column order for table display (includes all columns)
+// DB column order for table display — matches the exact import column order
 export const TABLE_COLUMN_ORDER = [
   "proveedor",
   "modelo",
   "descripcion",
-  "descripcion_eshop",
   "composicion",
   "nuevo",
   "preventa",
   "sale",
   "outlet",
+  "descripcion_eshop",
   "repite_color",
   "prioridad",
   "video",
   "imagen",
   "ia",
-  "image",
   "created_at",
   "updated_at",
 ];

@@ -29,6 +29,7 @@ import {
   addProveedor,
   editProveedor,
   removeProveedor,
+  removeAllProveedores,
   importProveedores,
   exportProveedoresXlsx,
   toggleSkipAi,
@@ -69,6 +70,7 @@ export default function ProveedoresPage() {
   const [editingProveedor, setEditingProveedor] = useState<Proveedor | null>(null);
   const [formData, setFormData] = useState({ codigo: "", nombre: "", tipo: "" });
   const [isSaving, setIsSaving] = useState(false);
+  const [isDeletingAll, setIsDeletingAll] = useState(false);
 
   const loadData = useCallback(async () => {
     try {
@@ -284,6 +286,27 @@ export default function ProveedoresPage() {
     }
   };
 
+  const handleDeleteAll = async () => {
+    setIsDeletingAll(true);
+    try {
+      const result = await removeAllProveedores();
+      if (result.success) {
+        toast.success(
+          `Se eliminaron ${result.deletedCount} proveedores`
+        );
+        await loadData();
+      } else {
+        toast.error(result.error || "Error al eliminar proveedores");
+      }
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Error al eliminar proveedores"
+      );
+    } finally {
+      setIsDeletingAll(false);
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="h-screen bg-background flex items-center justify-center">
@@ -325,6 +348,47 @@ export default function ProveedoresPage() {
           </div>
 
           <div className="flex items-center gap-2">
+            {proveedores.length > 0 && (
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="text-destructive hover:text-destructive hover:bg-destructive/10 border-destructive/30"
+                    disabled={isDeletingAll}
+                  >
+                    {isDeletingAll ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-4 w-4" />
+                    )}
+                    <span className="ml-2">Eliminar todos</span>
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>
+                      Eliminar todos los proveedores
+                    </AlertDialogTitle>
+                    <AlertDialogDescription>
+                      ¿Estás seguro de que querés eliminar los{" "}
+                      <strong>{proveedores.length}</strong> proveedores
+                      cargados? Esta acción no se puede deshacer.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                    <AlertDialogAction
+                      onClick={handleDeleteAll}
+                      className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                    >
+                      Eliminar todos
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            )}
+
             <Button
               variant="outline"
               size="sm"

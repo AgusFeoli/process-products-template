@@ -4,6 +4,7 @@ import { downloadImageFromSftp } from "@/lib/ftp-service";
 import { resolveProductImages } from "@/lib/image-matcher";
 import { generateProductDescription, type ProductData } from "@/lib/ai-service";
 import { getSkipAiProveedorNames } from "@/lib/proveedores-db";
+import { BatchEngine, defaultTransientClassifier, type BatchProgress } from "@/lib/batch-engine";
 
 // Force dynamic rendering - don't analyze during build
 export const dynamic = 'force-dynamic';
@@ -18,7 +19,6 @@ function getSql() {
 }
 
 const TARGET_TABLE = process.env.TARGET_TABLE || "products";
-const BATCH_SIZE = 50;
 const AI_VERSION = "2.0"; // Increment when prompt/model changes
 
 // Skipped products tracking
@@ -27,11 +27,32 @@ interface SkippedProduct {
   modelo: string;
   proveedor: string;
   descripcion: string;
+  descripcionEshop: string | null;
+}
+
+// Pending change for review
+export interface PendingChange {
+  id: number;
+  modelo: string;
+  proveedor: string;
+  descripcion: string;
+  oldDescripcionEshop: string | null;
+  newDescripcionEshop: string;
+  oldImagen: string | null;
+  newImagen: string | null;
+  hasImage: boolean;
+  // Data needed for cache update after apply
+  productUpdatedAt: string | null;
+  primaryImagePath: string | null;
+  imageModifyTime: string | null;
+  allImagesJson: string | null;
 }
 
 // Processing state (in-memory for this instance)
 let isProcessing = false;
 let skippedByProviderList: SkippedProduct[] = [];
+let pendingChanges: PendingChange[] = [];
+let currentBatchEngine: BatchEngine<Record<string, unknown>> | null = null;
 let processingStats = {
   total: 0,
   processed: 0,
@@ -45,14 +66,29 @@ let processingStats = {
   startTime: 0,
   withImage: 0,
   withoutImage: 0,
+  // Batch engine stats
+  activeWorkers: 0,
+  currentConcurrency: 0,
+  circuitState: "closed" as string,
+  throughput: 0,
 };
 
 // GET: Check processing status
 export async function GET() {
+  // If engine is running, sync its progress into processingStats
+  if (currentBatchEngine && isProcessing) {
+    const ep = currentBatchEngine.getProgress();
+    processingStats.activeWorkers = ep.activeWorkers;
+    processingStats.currentConcurrency = ep.currentConcurrency;
+    processingStats.circuitState = ep.circuitState;
+    processingStats.throughput = ep.throughput;
+  }
+
   return NextResponse.json({
     isProcessing,
     stats: processingStats,
     skippedByProviderList: !isProcessing ? skippedByProviderList : undefined,
+    pendingChanges: !isProcessing ? pendingChanges : undefined,
   });
 }
 
@@ -63,6 +99,9 @@ export async function POST(request: NextRequest) {
 
   if (action === "stop") {
     isProcessing = false;
+    if (currentBatchEngine) {
+      currentBatchEngine.stop();
+    }
     return NextResponse.json({
       success: true,
       message: "Procesamiento detenido",
@@ -74,6 +113,152 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       isProcessing,
       stats: processingStats,
+    });
+  }
+
+  // Apply selected changes
+  if (action === "apply") {
+    const selectedIds: number[] = body.selectedIds || [];
+    // Accept changes from client as fallback when in-memory state is lost (hot-reload)
+    const clientChanges: PendingChange[] = body.changes || [];
+    // Accept edited descriptions from the review dialog
+    const editedDescriptions: Record<string, string> = body.editedDescriptions || {};
+
+    if (selectedIds.length === 0) {
+      return NextResponse.json({
+        success: false,
+        message: "No se seleccionaron cambios para aplicar",
+      });
+    }
+
+    // Use in-memory pendingChanges if available, otherwise use client-sent data
+    const changesToApply = pendingChanges.length > 0 ? pendingChanges : clientChanges;
+
+    if (changesToApply.length === 0) {
+      return NextResponse.json({
+        success: false,
+        message: "No hay cambios pendientes para aplicar. Volvé a procesar con IA.",
+      });
+    }
+
+    try {
+      const sql = getSql();
+      const now = new Date().toISOString();
+      let applied = 0;
+
+      for (const change of changesToApply) {
+        if (!selectedIds.includes(change.id)) continue;
+
+        // Use edited description if available, otherwise use AI-generated
+        const descToApply = String(change.id) in editedDescriptions
+          ? editedDescriptions[String(change.id)]
+          : change.newDescripcionEshop;
+
+        // Apply the change to the database
+        if (change.newImagen) {
+          await sql(
+            `UPDATE "${TARGET_TABLE}"
+             SET descripcion_eshop = $1,
+                 imagen = $2,
+                 ia = true,
+                 updated_at = $3
+             WHERE id = $4`,
+            [descToApply, change.newImagen, now, change.id]
+          );
+        } else {
+          await sql(
+            `UPDATE "${TARGET_TABLE}"
+             SET descripcion_eshop = $1,
+                 ia = true,
+                 updated_at = $2
+             WHERE id = $3`,
+            [descToApply, now, change.id]
+          );
+        }
+
+        // Update AI cache
+        await updateAiCache(
+          change.id,
+          change.productUpdatedAt,
+          change.primaryImagePath,
+          change.imageModifyTime ? new Date(change.imageModifyTime) : null,
+          change.allImagesJson
+        );
+
+        applied++;
+      }
+
+      // Clear pending changes after apply
+      pendingChanges = [];
+      skippedByProviderList = [];
+
+      return NextResponse.json({
+        success: true,
+        message: `Se aplicaron ${applied} cambios exitosamente`,
+        applied,
+      });
+    } catch (error) {
+      console.error("Error applying changes:", error);
+      return NextResponse.json({
+        success: false,
+        message: error instanceof Error ? error.message : "Error al aplicar cambios",
+      });
+    }
+  }
+
+  // Save manually edited descriptions (for skipped products or manual edits)
+  if (action === "save-descriptions") {
+    const descriptions: Record<string, string> = body.descriptions || {};
+    const ids = Object.keys(descriptions);
+
+    if (ids.length === 0) {
+      return NextResponse.json({
+        success: false,
+        message: "No hay descripciones para guardar",
+      });
+    }
+
+    try {
+      const sql = getSql();
+      const now = new Date().toISOString();
+      let saved = 0;
+
+      for (const idStr of ids) {
+        const id = Number(idStr);
+        const desc = descriptions[idStr];
+        if (!id || desc === undefined) continue;
+
+        await sql(
+          `UPDATE "${TARGET_TABLE}"
+           SET descripcion_eshop = $1,
+               updated_at = $2
+           WHERE id = $3`,
+          [desc, now, id]
+        );
+        saved++;
+      }
+
+      return NextResponse.json({
+        success: true,
+        message: `Se guardaron ${saved} descripciones`,
+        saved,
+      });
+    } catch (error) {
+      console.error("Error saving descriptions:", error);
+      return NextResponse.json({
+        success: false,
+        message: error instanceof Error ? error.message : "Error al guardar descripciones",
+      });
+    }
+  }
+
+  // Discard all pending changes
+  if (action === "discard") {
+    pendingChanges = [];
+    skippedByProviderList = [];
+    return NextResponse.json({
+      success: true,
+      message: "Cambios descartados",
     });
   }
 
@@ -89,6 +274,7 @@ export async function POST(request: NextRequest) {
   // Start background processing
   isProcessing = true;
   skippedByProviderList = [];
+  pendingChanges = [];
   processingStats = {
     total: 0,
     processed: 0,
@@ -102,6 +288,10 @@ export async function POST(request: NextRequest) {
     startTime: Date.now(),
     withImage: 0,
     withoutImage: 0,
+    activeWorkers: 0,
+    currentConcurrency: 0,
+    circuitState: "closed",
+    throughput: 0,
   };
 
   // Run processing in background (non-blocking)
@@ -118,7 +308,7 @@ export async function POST(request: NextRequest) {
   });
 }
 
-// Main processing function
+// Main processing function — uses BatchEngine for parallel execution
 async function processAllBatches() {
   try {
     const sql = getSql();
@@ -135,99 +325,137 @@ async function processAllBatches() {
       console.warn("Could not load skip_ai providers:", err);
     }
 
-    // Get total count of products to process (ia = false or ia IS NULL)
-    const countResult = await sql(
-      `SELECT COUNT(*) as count FROM "${TARGET_TABLE}" WHERE ia IS NULL OR ia = false`
+    // Fetch ALL unprocessed products upfront so BatchEngine can size batches
+    const allProducts = await sql(
+      `SELECT * FROM "${TARGET_TABLE}"
+       WHERE ia IS NULL OR ia = false
+       ORDER BY id`
     );
-    const totalCount = Number(countResult[0]?.count || 0);
 
-    if (totalCount === 0) {
+    if (allProducts.length === 0) {
       processingStats.total = 0;
       processingStats.totalBatches = 0;
       isProcessing = false;
       return;
     }
 
-    processingStats.total = totalCount;
-    processingStats.totalBatches = Math.ceil(totalCount / BATCH_SIZE);
-
-    // Check if we have indexed images
-    const imageCountResult = await sql`SELECT COUNT(*) as count FROM sftp_images`;
-    const indexedImageCount = Number(imageCountResult[0]?.count || 0);
-
-    let batchNumber = 0;
-
-    // Process in batches until all done or stopped
-    while (isProcessing) {
-      batchNumber++;
-      processingStats.currentBatch = batchNumber;
-
-      // Fetch next batch of unprocessed products
-      const batch = await sql(
-        `SELECT * FROM "${TARGET_TABLE}"
-         WHERE ia IS NULL OR ia = false
-         ORDER BY id
-         LIMIT ${BATCH_SIZE}`
-      );
-
-      if (batch.length === 0) {
-        // No more products to process
-        break;
-      }
-
-      // Process each product in the batch
-      for (const product of batch) {
-        if (!isProcessing) break;
-
-        // Check if product's provider is in the skip_ai list
-        const productProveedor = String(product.proveedor || "").toLowerCase().trim();
-        if (productProveedor && skipAiProviders.includes(productProveedor)) {
-          // Skip this product - mark as processed (ia = true) but don't generate description
-          const now = new Date().toISOString();
-          await sql(
-            `UPDATE "${TARGET_TABLE}" SET ia = true, updated_at = $1 WHERE id = $2`,
-            [now, product.id]
-          );
-          skippedByProviderList.push({
-            id: product.id as number,
-            modelo: String(product.modelo || ""),
-            proveedor: String(product.proveedor || ""),
-            descripcion: String(product.descripcion || ""),
-          });
-          processingStats.skippedByProvider++;
-          processingStats.processed++;
-          continue;
-        }
-
-        try {
-          const result = await processProduct(product, promptTemplate);
-          if (result.skipped) {
-            processingStats.skipped++;
-          } else {
-            processingStats.success++;
-            if (result.hasImage) {
-              processingStats.withImage++;
-            } else {
-              processingStats.withoutImage++;
-            }
-          }
-        } catch (error) {
-          processingStats.errors++;
-          processingStats.lastError = error instanceof Error ? error.message : "Unknown error";
-          console.error(`[ProcessJob] Error product ${product.id}:`, error);
-        }
-
+    // Separate provider-skipped products before sending to engine
+    const productsToProcess: Record<string, unknown>[] = [];
+    for (const product of allProducts) {
+      const productProveedor = String(product.proveedor || "").toLowerCase().trim();
+      if (productProveedor && skipAiProviders.includes(productProveedor)) {
+        // Mark as processed in DB and track as skipped
+        const now = new Date().toISOString();
+        await sql(
+          `UPDATE "${TARGET_TABLE}" SET ia = true, updated_at = $1 WHERE id = $2`,
+          [now, product.id]
+        );
+        skippedByProviderList.push({
+          id: product.id as number,
+          modelo: String(product.modelo || ""),
+          proveedor: String(product.proveedor || ""),
+          descripcion: String(product.descripcion || ""),
+          descripcionEshop: (product.descripcion_eshop as string) || null,
+        });
+        processingStats.skippedByProvider++;
         processingStats.processed++;
+      } else {
+        productsToProcess.push(product);
       }
+    }
 
-      // Small delay between batches to avoid overwhelming the system
-      await delay(100);
+    processingStats.total = allProducts.length;
+
+    if (productsToProcess.length === 0) {
+      isProcessing = false;
+      return;
+    }
+
+    // Configure and create BatchEngine
+    // Concurrency tuned for AI API calls (~1-5s each) + SFTP downloads
+    const engine = new BatchEngine<Record<string, unknown>>(
+      {
+        minBatchSize: 5,
+        maxBatchSize: 50,
+        maxConcurrentBatches: 3,
+        maxConcurrencyPerBatch: 5,
+        globalMaxConcurrency: 8,       // 8 parallel AI calls max
+        circuitBreakerThreshold: 10,   // Open after 10 consecutive failures
+        circuitBreakerResetMs: 30000,  // Wait 30s before half-open probe
+        maxRetries: 3,
+        retryBaseDelayMs: 1000,
+        retryMaxDelayMs: 30000,
+        throttleErrorThreshold: 0.3,   // Throttle down at 30% error rate
+        throttleRecoveryStreak: 15,    // Throttle up after 15 consecutive successes
+        interBatchDelayMs: 50,
+      },
+      defaultTransientClassifier,
+      // Progress callback — sync engine stats into processingStats
+      (progress: BatchProgress) => {
+        processingStats.currentBatch = progress.currentBatch;
+        processingStats.totalBatches = progress.totalBatches;
+        processingStats.activeWorkers = progress.activeWorkers;
+        processingStats.currentConcurrency = progress.currentConcurrency;
+        processingStats.circuitState = progress.circuitState;
+        processingStats.throughput = progress.throughput;
+        if (progress.lastError) {
+          processingStats.lastError = progress.lastError;
+        }
+      }
+    );
+
+    currentBatchEngine = engine;
+
+    // Run the engine
+    const results = await engine.process(
+      productsToProcess,
+      // processItem: the actual per-product work
+      async (product, _signal) => {
+        return processProduct(product, promptTemplate);
+      },
+      // shouldProcess: cache-based skip check
+      async (product) => {
+        const productId = product.id as number;
+        const productUpdatedAt = product.updated_at as string | null;
+        const shouldSkip = await checkIfShouldSkip(productId, productUpdatedAt);
+        return !shouldSkip;
+      }
+    );
+
+    // Aggregate results into processingStats
+    for (const result of results) {
+      if (!result) continue;
+      if (result.success && result.result) {
+        const r = result.result as { skipped: boolean; hasImage: boolean };
+        if (r.skipped) {
+          processingStats.skipped++;
+        } else {
+          processingStats.success++;
+          if (r.hasImage) {
+            processingStats.withImage++;
+          } else {
+            processingStats.withoutImage++;
+          }
+        }
+        processingStats.processed++;
+      } else if (!result.success) {
+        // Only count as error if it wasn't a skip (skips are tracked by engine)
+        if (result.error?.message !== "Aborted") {
+          processingStats.errors++;
+          processingStats.processed++;
+          if (result.error) {
+            processingStats.lastError = result.error.message;
+            console.error(`[ProcessJob] Error:`, result.error.message);
+          }
+        }
+      }
     }
   } catch (error) {
     console.error("Fatal error:", error);
     processingStats.lastError = error instanceof Error ? error.message : "Unknown error";
   } finally {
     isProcessing = false;
+    currentBatchEngine = null;
   }
 }
 
@@ -241,7 +469,7 @@ async function getPromptTemplate(): Promise<string | undefined> {
       ORDER BY updated_at DESC, id DESC
       LIMIT 1
     `;
-    
+
     if (result.length > 0 && result[0].prompt_template) {
       return result[0].prompt_template as string;
     }
@@ -252,7 +480,8 @@ async function getPromptTemplate(): Promise<string | undefined> {
   }
 }
 
-// Process a single product
+// Process a single product - generates description but stores as pending change
+// Cache check is handled by BatchEngine's shouldProcess predicate
 async function processProduct(
   product: Record<string, unknown>,
   promptTemplate?: string
@@ -261,13 +490,7 @@ async function processProduct(
   const modelo = String(product.modelo || "");
   const productUpdatedAt = product.updated_at as string | null;
 
-  // 1. Check cache to see if we should skip
-  const shouldSkip = await checkIfShouldSkip(productId, productUpdatedAt);
-  if (shouldSkip) {
-    return { skipped: true, hasImage: false };
-  }
-
-  // 2. Resolve images using indexed DB (fast trigram search + cache)
+  // Resolve images using indexed DB (fast trigram search + cache)
   let imagePaths: string[] = [];
   let imageBuffers: Buffer[] = [];
   let primaryImagePath: string | null = null;
@@ -309,54 +532,39 @@ async function processProduct(
 
   // 5. Generate AI description (with images if available)
   const newDescription = await generateProductDescription(
-    productData, 
+    productData,
     imageBuffers.length > 0 ? imageBuffers : null,
     promptTemplate
   );
 
-  // 7. Update product in database
-  const now = new Date().toISOString();
-  const sql = getSql();
-
-  // Store all image paths as JSON array in the imagen column
-  // If multiple images, store as JSON array; if single, store as string; if none, store null
+  // 6. Compute imagen value
   let imagenValue: string | null = null;
   if (imagePaths.length > 0) {
     if (imagePaths.length === 1) {
-      // Single image: store as plain string for backward compatibility
       imagenValue = imagePaths[0];
     } else {
-      // Multiple images: store as JSON array
       imagenValue = JSON.stringify(imagePaths);
     }
   }
 
-  if (imagenValue) {
-    await sql(
-      `UPDATE "${TARGET_TABLE}"
-       SET descripcion_eshop = $1,
-           imagen = $2,
-           ia = true,
-           updated_at = $3
-       WHERE id = $4`,
-      [newDescription, imagenValue, now, productId]
-    );
-  } else {
-    await sql(
-      `UPDATE "${TARGET_TABLE}"
-       SET descripcion_eshop = $1,
-           ia = true,
-           updated_at = $2
-       WHERE id = $3`,
-      [newDescription, now, productId]
-    );
-  }
-
-  // Store all images JSON for AI cache tracking
   const allImagesJson = imagePaths.length > 0 ? JSON.stringify(imagePaths) : null;
 
-  // 8. Update AI cache/version tracking
-  await updateAiCache(productId, productUpdatedAt, primaryImagePath, imageModifyTime, allImagesJson);
+  // 7. Store as pending change instead of writing to DB
+  pendingChanges.push({
+    id: productId,
+    modelo: String(product.modelo || ""),
+    proveedor: String(product.proveedor || ""),
+    descripcion: String(product.descripcion || ""),
+    oldDescripcionEshop: product.descripcion_eshop as string | null,
+    newDescripcionEshop: newDescription,
+    oldImagen: product.imagen as string | null,
+    newImagen: imagenValue,
+    hasImage: imageBuffers.length > 0,
+    productUpdatedAt,
+    primaryImagePath,
+    imageModifyTime: imageModifyTime?.toISOString() || null,
+    allImagesJson,
+  });
 
   return { skipped: false, hasImage: imageBuffers.length > 0 };
 }
@@ -369,11 +577,11 @@ async function checkIfShouldSkip(
   try {
     const sql = getSql();
     const cached = await sql`
-      SELECT 
+      SELECT
         ai_version,
         product_updated_at,
         image_modify_time
-      FROM product_ai 
+      FROM product_ai
       WHERE product_id = ${productId}
     `;
 
@@ -382,7 +590,7 @@ async function checkIfShouldSkip(
     }
 
     const cache = cached[0];
-    
+
     // If AI version changed, need to reprocess
     if (cache.ai_version !== AI_VERSION) {
       return false;
@@ -416,7 +624,7 @@ async function updateAiCache(
   try {
     const sql = getSql();
     const now = new Date().toISOString();
-    
+
     await sql`
       INSERT INTO product_ai (
         product_id,
@@ -449,7 +657,3 @@ async function updateAiCache(
   }
 }
 
-// Utility function
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}

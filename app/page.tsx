@@ -26,15 +26,6 @@ import {
 } from "./actions";
 import { getColumnDisplayName, TABLE_COLUMN_ORDER } from "@/lib/column-mapping";
 import { Progress } from "@/components/ui/progress";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -48,6 +39,7 @@ import Link from "next/link";
 import { PromptConfig } from "@/components/prompt-config";
 import { DescriptionVariantsModal } from "@/components/description-variants-modal";
 import { Login } from "@/components/login";
+import { AIReviewDialog, type PendingChange, type SkippedProduct } from "@/components/ai-review-dialog";
 
 // Sort direction type
 type SortDirection = "asc" | "desc" | null;
@@ -84,11 +76,12 @@ export default function Home() {
     withoutImage?: number;
   } | null>(null);
 
-  // Skipped products dialog state
-  const [isSkippedDialogOpen, setIsSkippedDialogOpen] = useState(false);
-  const [skippedProducts, setSkippedProducts] = useState<
-    { id: number; modelo: string; proveedor: string; descripcion: string }[]
-  >([]);
+  // Skipped products state
+  const [skippedProducts, setSkippedProducts] = useState<SkippedProduct[]>([]);
+
+  // AI Review dialog state
+  const [isReviewDialogOpen, setIsReviewDialogOpen] = useState(false);
+  const [pendingChanges, setPendingChanges] = useState<PendingChange[]>([]);
 
   // Prompt config state
   const [isPromptConfigOpen, setIsPromptConfigOpen] = useState(false);
@@ -529,13 +522,19 @@ export default function Home() {
             toast.success("Procesamiento IA completado");
             // Play completion sound
             playCompletionSound();
-            // Fetch skipped products list
+            // Fetch pending changes and skipped products for review
             try {
               const statusRes = await fetch("/api/process");
               const statusData = await statusRes.json();
-              if (statusData.skippedByProviderList && statusData.skippedByProviderList.length > 0) {
-                setSkippedProducts(statusData.skippedByProviderList);
-                setIsSkippedDialogOpen(true);
+              const changes: PendingChange[] = statusData.pendingChanges || [];
+              const skipped: SkippedProduct[] = statusData.skippedByProviderList || [];
+
+              setPendingChanges(changes);
+              setSkippedProducts(skipped);
+
+              // Open review dialog if there are changes or skipped products
+              if (changes.length > 0 || skipped.length > 0) {
+                setIsReviewDialogOpen(true);
               }
             } catch {
               // Ignore
@@ -549,6 +548,78 @@ export default function Home() {
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Error al iniciar procesamiento");
       setIsProcessingAI(false);
+    }
+  };
+
+  // AI Review dialog handlers
+  const handleConfirmChanges = async (
+    selectedIds: number[],
+    editedDescriptions?: Record<number, string>
+  ) => {
+    try {
+      const response = await fetch("/api/process", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "apply",
+          selectedIds,
+          // Send changes from client as fallback in case server memory was cleared
+          changes: pendingChanges,
+          // Send edited descriptions so server uses them instead of AI-generated
+          editedDescriptions: editedDescriptions || {},
+        }),
+      });
+      const data = await response.json();
+
+      if (data.success) {
+        toast.success(data.message || `Se aplicaron ${data.applied} cambios`);
+        setIsReviewDialogOpen(false);
+        setPendingChanges([]);
+        setSkippedProducts([]);
+        await loadData();
+      } else {
+        toast.error(data.message || "Error al aplicar cambios");
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Error al aplicar cambios");
+    }
+  };
+
+  const handleSaveDescriptions = async (descriptions: Record<number, string>) => {
+    try {
+      const response = await fetch("/api/process", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "save-descriptions",
+          descriptions,
+        }),
+      });
+      const data = await response.json();
+
+      if (data.success) {
+        toast.success(data.message || `Se guardaron ${data.saved} descripciones`);
+        await loadData();
+      } else {
+        toast.error(data.message || "Error al guardar descripciones");
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Error al guardar descripciones");
+    }
+  };
+
+  const handleDiscardChanges = async () => {
+    try {
+      await fetch("/api/process", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "discard" }),
+      });
+      setPendingChanges([]);
+      setSkippedProducts([]);
+      toast.info("Cambios descartados");
+    } catch {
+      // Ignore
     }
   };
 
@@ -894,41 +965,16 @@ export default function Home() {
         />
       )}
 
-      {/* Skipped Products Dialog */}
-      <Dialog open={isSkippedDialogOpen} onOpenChange={setIsSkippedDialogOpen}>
-        <DialogContent className="sm:max-w-2xl">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Ban className="h-5 w-5 text-orange-500" />
-              Productos no procesados por proveedor
-            </DialogTitle>
-            <DialogDescription>
-              Los siguientes {skippedProducts.length} productos fueron omitidos porque su proveedor tiene la opción &quot;Omitir IA&quot; activada.
-            </DialogDescription>
-          </DialogHeader>
-          <ScrollArea className="max-h-[400px]">
-            <div className="space-y-1">
-              <div className="grid grid-cols-[80px_1fr_1fr] gap-2 px-3 py-2 bg-muted rounded-md text-xs font-medium text-muted-foreground sticky top-0">
-                <span>ID</span>
-                <span>Modelo</span>
-                <span>Proveedor</span>
-              </div>
-              {skippedProducts.map((p) => (
-                <div
-                  key={p.id}
-                  className="grid grid-cols-[80px_1fr_1fr] gap-2 px-3 py-2 text-sm border-b border-border last:border-0 hover:bg-muted/50 transition-colors"
-                >
-                  <span className="text-muted-foreground font-mono text-xs">{p.id}</span>
-                  <span className="truncate font-medium">{p.modelo || "-"}</span>
-                  <Badge variant="outline" className="w-fit text-orange-600 border-orange-200 bg-orange-50">
-                    {p.proveedor}
-                  </Badge>
-                </div>
-              ))}
-            </div>
-          </ScrollArea>
-        </DialogContent>
-      </Dialog>
+      {/* AI Review Dialog */}
+      <AIReviewDialog
+        open={isReviewDialogOpen}
+        onOpenChange={setIsReviewDialogOpen}
+        pendingChanges={pendingChanges}
+        skippedProducts={skippedProducts}
+        onConfirm={handleConfirmChanges}
+        onDiscard={handleDiscardChanges}
+        onSaveDescriptions={handleSaveDescriptions}
+      />
 
       {/* Full-screen Table */}
       <main className="flex-1 overflow-auto">
