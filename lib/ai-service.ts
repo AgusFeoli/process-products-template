@@ -180,11 +180,8 @@ function buildProductContext(
       : "";
     context = context.replace(/\{\{ESTADO\}\}/g, estadoText);
     
-    if (product.repite_color) {
-      context = context.replace(/\{\{COLOR\}\}/g, `Color: **${product.repite_color}**`);
-    } else {
-      context = context.replace(/\{\{COLOR\}\}/g, "");
-    }
+    // Remove color from context - descriptions must be color-agnostic
+    context = context.replace(/\{\{COLOR\}\}/g, "");
     
     // Remove empty lines
     return context.split("\n").filter(line => line.trim()).join("\n");
@@ -217,9 +214,7 @@ function buildProductContext(
     productInfo.push(`Estado: **${flags.join(", ")}** *(Por ej.: Producto Nuevo, Preventa, Edición Limitada, En Outlet, etc.)*`);
   }
 
-  if (product.repite_color) {
-    productInfo.push(`Color: **${product.repite_color}**`);
-  }
+  // Color intentionally omitted - descriptions must be color-agnostic
 
   return productInfo.join("\n");
 }
@@ -247,9 +242,10 @@ INSTRUCCIONES:
 6. **No** incluyas información sobre el precio, descuentos ni promociones en la descripción. (Esos datos se muestran por separado en el e-commerce).  
 7. Si el producto está en oferta, liquidación u outlet, **no** lo menciones en la descripción. (Evitá frases como "precio rebajado" o similares).  
 8. Si el producto es nuevo, de temporada actual o una **edición limitada/exclusiva**, podés mencionarlo sutilmente para generar entusiasmo (ej.: "nueva colección", "edición especial de la temporada"), pero sin exagerar ni distraer de la descripción principal.  
-9. **No** uses emojis ni caracteres especiales innecesarios. Mantené un estilo profesional y sofisticado.  
-10. **No** incluyas referencias a "imágenes" o comandos; la descripción debe leerse como un texto escrito por un redactor humano, no por una IA siguiendo instrucciones.  
-11. **SOBRE EL CALL-TO-ACTION (CTA)**: 
+9. **No** uses emojis ni caracteres especiales innecesarios. Mantené un estilo profesional y sofisticado.
+10. **No** incluyas referencias a "imágenes" o comandos; la descripción debe leerse como un texto escrito por un redactor humano, no por una IA siguiendo instrucciones.
+11. **NUNCA describas el color del producto.** La misma descripción se usa para todas las variantes de color del producto, por lo que no debe mencionar ningún color específico. Evitá frases como "en color negro", "tono blanco", "azul marino", etc. Si ves colores en las imágenes, ignoralos completamente en la descripción.
+12. **SOBRE EL CALL-TO-ACTION (CTA)**:
     - El CTA es **OPCIONAL**. Solo incluilo si realmente suma valor y urgencia a la descripción.
     - Si la descripción ya es convincente y completa, podés finalizarla sin CTA.
     - Si decidís incluir un CTA, debe ser creativo y variado.
@@ -395,18 +391,20 @@ function buildImageInstruction(
   // Default behavior
   if (imageCount === 1) {
     return `
-[INSTRUCCIONES DE IMAGEN - solo si hay imágenes]  
-- Analizá la imagen del producto para extraer detalles visuales únicos.  
-- Describí el estilo, color, textura y características visibles que hacen al producto especial.  
+[INSTRUCCIONES DE IMAGEN - solo si hay imágenes]
+- Analizá la imagen del producto para extraer detalles visuales únicos.
+- Describí el estilo, textura y características visibles que hacen al producto especial.
+- **NO describas el color del producto.** La misma descripción se usa para todas las variantes de color.
 - Usá la imagen para enriquecer la descripción con detalles que solo se aprecian en la foto (ej: tipo de estampado, forma del cuello, acabados, accesorios incluidos, etc.).
 `;
   }
-  
+
   return `
-[INSTRUCCIONES DE IMAGEN - solo si hay imágenes]  
-- Tenés **${imageCount}** imágenes del producto para analizar.  
-- Analizá **todas** las imágenes para extraer un panorama completo de los detalles visuales.  
-- Describí el estilo, color, textura, detalles y características visibles desde diferentes ángulos.  
+[INSTRUCCIONES DE IMAGEN - solo si hay imágenes]
+- Tenés **${imageCount}** imágenes del producto para analizar.
+- Analizá **todas** las imágenes para extraer un panorama completo de los detalles visuales.
+- Describí el estilo, textura, detalles y características visibles desde diferentes ángulos.
+- **NO describas el color del producto.** La misma descripción se usa para todas las variantes de color.
 - Mencioná los distintos aspectos que se aprecian en cada imagen (vista frontal, detalles de primer plano, dorso, interior, etc.) para brindar una descripción rica y completa.
 `;
 }

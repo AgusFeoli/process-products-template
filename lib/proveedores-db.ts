@@ -9,6 +9,7 @@ export interface Proveedor {
   codigo: number;
   nombre: string;
   tipo: string;
+  skip_ai?: boolean;
 }
 
 // Ensure proveedores table exists
@@ -19,19 +20,33 @@ export async function ensureProveedoresTable(): Promise<void> {
       codigo INTEGER NOT NULL UNIQUE,
       nombre VARCHAR(255) NOT NULL,
       tipo VARCHAR(100) DEFAULT '',
+      skip_ai BOOLEAN DEFAULT false,
       created_at TIMESTAMP DEFAULT NOW(),
       updated_at TIMESTAMP DEFAULT NOW()
     )
   `;
+  // Add skip_ai column if it doesn't exist (for existing tables)
+  await sql`
+    ALTER TABLE proveedores ADD COLUMN IF NOT EXISTS skip_ai BOOLEAN DEFAULT false
+  `.catch(() => {});
 }
 
 // Get all proveedores
 export async function getProveedores(): Promise<Proveedor[]> {
   await ensureProveedoresTable();
   const result = await sql`
-    SELECT id, codigo, nombre, tipo FROM proveedores ORDER BY codigo ASC
+    SELECT id, codigo, nombre, tipo, COALESCE(skip_ai, false) as skip_ai FROM proveedores ORDER BY codigo ASC
   `;
   return result as Proveedor[];
+}
+
+// Get proveedores with skip_ai = true (names list for AI processing)
+export async function getSkipAiProveedorNames(): Promise<string[]> {
+  await ensureProveedoresTable();
+  const result = await sql`
+    SELECT nombre FROM proveedores WHERE skip_ai = true
+  `;
+  return result.map((r: { nombre: string }) => r.nombre);
 }
 
 // Insert a single proveedor
@@ -40,10 +55,10 @@ export async function insertProveedor(
 ): Promise<Proveedor> {
   await ensureProveedoresTable();
   const result = await sql`
-    INSERT INTO proveedores (codigo, nombre, tipo)
-    VALUES (${proveedor.codigo}, ${proveedor.nombre}, ${proveedor.tipo || ''})
-    ON CONFLICT (codigo) DO UPDATE SET nombre = EXCLUDED.nombre, tipo = EXCLUDED.tipo, updated_at = NOW()
-    RETURNING id, codigo, nombre, tipo
+    INSERT INTO proveedores (codigo, nombre, tipo, skip_ai)
+    VALUES (${proveedor.codigo}, ${proveedor.nombre}, ${proveedor.tipo || ''}, ${proveedor.skip_ai || false})
+    ON CONFLICT (codigo) DO UPDATE SET nombre = EXCLUDED.nombre, tipo = EXCLUDED.tipo, skip_ai = EXCLUDED.skip_ai, updated_at = NOW()
+    RETURNING id, codigo, nombre, tipo, skip_ai
   `;
   return result[0] as Proveedor;
 }
@@ -80,7 +95,7 @@ export async function updateProveedor(
   data: Partial<Omit<Proveedor, "id">>
 ): Promise<void> {
   const updates: string[] = [];
-  const values: (string | number)[] = [];
+  const values: (string | number | boolean)[] = [];
   let paramIndex = 1;
 
   if (data.codigo !== undefined) {
@@ -94,6 +109,10 @@ export async function updateProveedor(
   if (data.tipo !== undefined) {
     updates.push(`tipo = $${paramIndex++}`);
     values.push(data.tipo);
+  }
+  if (data.skip_ai !== undefined) {
+    updates.push(`skip_ai = $${paramIndex++}`);
+    values.push(data.skip_ai);
   }
 
   if (updates.length === 0) return;

@@ -7,6 +7,7 @@ import {
   updateProveedor as updateProveedorDb,
   deleteProveedor as deleteProveedorDb,
   deleteAllProveedores as deleteAllProveedoresDb,
+  getSkipAiProveedorNames,
   type Proveedor,
 } from "@/lib/proveedores-db";
 import * as XLSX from "xlsx";
@@ -242,6 +243,39 @@ function parseCsvLine(line: string): string[] {
 
   result.push(current.trim());
   return result;
+}
+
+export async function toggleSkipAi(
+  id: number,
+  skipAi: boolean
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    await updateProveedorDb(id, { skip_ai: skipAi });
+    return { success: true };
+  } catch (error) {
+    console.error("Toggle skip_ai error:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Error al actualizar",
+    };
+  }
+}
+
+export async function fetchSkipAiProveedorNames(): Promise<{
+  success: boolean;
+  data?: string[];
+  error?: string;
+}> {
+  try {
+    const data = await getSkipAiProveedorNames();
+    return { success: true, data };
+  } catch (error) {
+    console.error("Fetch skip_ai names error:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Error al obtener proveedores skip_ai",
+    };
+  }
 }
 
 export async function exportProveedoresXlsx(): Promise<{

@@ -26,7 +26,24 @@ import {
 } from "./actions";
 import { getColumnDisplayName, TABLE_COLUMN_ORDER } from "@/lib/column-mapping";
 import { Progress } from "@/components/ui/progress";
-import { Database, Upload, RefreshCw, Download, AlertCircle, Loader2, ArrowUp, ArrowDown, ArrowUpDown, Trash2, Sparkles, Square, FolderSync, Image, Settings, Users } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Database, Upload, RefreshCw, Download, AlertCircle, Loader2, ArrowUp, ArrowDown, ArrowUpDown, Trash2, Sparkles, Square, FolderSync, Image, Settings, Users, Ban, Search, X } from "lucide-react";
 import Link from "next/link";
 import { PromptConfig } from "@/components/prompt-config";
 import { DescriptionVariantsModal } from "@/components/description-variants-modal";
@@ -59,12 +76,19 @@ export default function Home() {
     success: number;
     errors: number;
     skipped?: number;
+    skippedByProvider?: number;
     currentBatch: number;
     totalBatches: number;
     lastError: string;
     withImage?: number;
     withoutImage?: number;
   } | null>(null);
+
+  // Skipped products dialog state
+  const [isSkippedDialogOpen, setIsSkippedDialogOpen] = useState(false);
+  const [skippedProducts, setSkippedProducts] = useState<
+    { id: number; modelo: string; proveedor: string; descripcion: string }[]
+  >([]);
 
   // Prompt config state
   const [isPromptConfigOpen, setIsPromptConfigOpen] = useState(false);
@@ -84,6 +108,10 @@ export default function Home() {
   // Sorting state
   const [sortColumn, setSortColumn] = useState<string | null>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>(null);
+
+  // Search and filter state
+  const [searchQuery, setSearchQuery] = useState("");
+  const [proveedorFilter, setProveedorFilter] = useState<string>("__all__");
 
   // Order columns according to TABLE_COLUMN_ORDER
   const orderedColumns = useMemo(() => {
@@ -147,13 +175,52 @@ export default function Home() {
     setIsAuthenticated(true);
   };
 
-  // Sorted rows
-  const sortedRows = useMemo(() => {
-    if (!tableData?.rows || !sortColumn || !sortDirection) {
-      return tableData?.rows || [];
+  // Get unique proveedores from data for filter dropdown
+  const uniqueProveedores = useMemo(() => {
+    if (!tableData?.rows) return [];
+    const set = new Set<string>();
+    for (const row of tableData.rows) {
+      const prov = row.proveedor;
+      if (prov && String(prov).trim()) {
+        set.add(String(prov).trim());
+      }
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [tableData?.rows]);
+
+  // Filtered rows
+  const filteredRows = useMemo(() => {
+    if (!tableData?.rows) return [];
+    let rows = tableData.rows;
+
+    // Filter by proveedor
+    if (proveedorFilter && proveedorFilter !== "__all__") {
+      rows = rows.filter(
+        (row) => String(row.proveedor || "").trim().toLowerCase() === proveedorFilter.toLowerCase()
+      );
     }
 
-    return [...tableData.rows].sort((a, b) => {
+    // Filter by search query
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim();
+      rows = rows.filter((row) => {
+        return Object.values(row).some((val) => {
+          if (val === null || val === undefined) return false;
+          return String(val).toLowerCase().includes(q);
+        });
+      });
+    }
+
+    return rows;
+  }, [tableData?.rows, searchQuery, proveedorFilter]);
+
+  // Sorted rows
+  const sortedRows = useMemo(() => {
+    if (!sortColumn || !sortDirection) {
+      return filteredRows;
+    }
+
+    return [...filteredRows].sort((a, b) => {
       const aVal = a[sortColumn];
       const bVal = b[sortColumn];
 
@@ -173,7 +240,7 @@ export default function Home() {
       const comparison = aStr.localeCompare(bStr);
       return sortDirection === "asc" ? comparison : -comparison;
     });
-  }, [tableData?.rows, sortColumn, sortDirection]);
+  }, [filteredRows, sortColumn, sortDirection]);
 
   const loadData = useCallback(async (showLoading = true) => {
     if (showLoading) setIsRefreshing(true);
@@ -462,6 +529,17 @@ export default function Home() {
             toast.success("Procesamiento IA completado");
             // Play completion sound
             playCompletionSound();
+            // Fetch skipped products list
+            try {
+              const statusRes = await fetch("/api/process");
+              const statusData = await statusRes.json();
+              if (statusData.skippedByProviderList && statusData.skippedByProviderList.length > 0) {
+                setSkippedProducts(statusData.skippedByProviderList);
+                setIsSkippedDialogOpen(true);
+              }
+            } catch {
+              // Ignore
+            }
           }
         }, 2000);
       } else {
@@ -563,7 +641,9 @@ export default function Home() {
             <Database className="h-5 w-5 text-primary" />
             <span className="font-semibold">{tableData?.tableName || "Productos"}</span>
             <span className="text-sm text-muted-foreground">
-              {tableData?.rows.length || 0} filas
+              {sortedRows.length !== (tableData?.rows.length || 0)
+                ? `${sortedRows.length} / ${tableData?.rows.length || 0} filas`
+                : `${tableData?.rows.length || 0} filas`}
             </span>
           </div>
 
@@ -697,6 +777,45 @@ export default function Home() {
           </div>
         </div>
 
+        {/* Search and Filter Bar */}
+        <div className="mt-2 flex items-center gap-3">
+          <div className="relative flex-1 max-w-sm">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Buscar productos..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-9 h-8 text-sm"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery("")}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+          <Select value={proveedorFilter} onValueChange={setProveedorFilter}>
+            <SelectTrigger className="w-[200px] h-8 text-sm">
+              <SelectValue placeholder="Todos los proveedores" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__all__">Todos los proveedores</SelectItem>
+              {uniqueProveedores.map((prov) => (
+                <SelectItem key={prov} value={prov}>
+                  {prov}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {(searchQuery || proveedorFilter !== "__all__") && (
+            <span className="text-xs text-muted-foreground">
+              {sortedRows.length} de {tableData?.rows.length || 0} productos
+            </span>
+          )}
+        </div>
+
         {/* AI Processing Progress Bar */}
         {isProcessingAI && processingStats && (
           <div className="mt-3 p-3 bg-muted/50 rounded-lg border border-border">
@@ -722,6 +841,12 @@ export default function Home() {
                   <span className="text-cyan-600 flex items-center gap-1">
                     <Image className="h-3 w-3" />
                     {processingStats.withImage}
+                  </span>
+                )}
+                {(processingStats.skippedByProvider ?? 0) > 0 && (
+                  <span className="text-orange-500 flex items-center gap-1">
+                    <Ban className="h-3 w-3" />
+                    Omitidos (proveedor): {processingStats.skippedByProvider}
                   </span>
                 )}
                 {(processingStats.skipped ?? 0) > 0 && (
@@ -768,6 +893,42 @@ export default function Home() {
           }}
         />
       )}
+
+      {/* Skipped Products Dialog */}
+      <Dialog open={isSkippedDialogOpen} onOpenChange={setIsSkippedDialogOpen}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Ban className="h-5 w-5 text-orange-500" />
+              Productos no procesados por proveedor
+            </DialogTitle>
+            <DialogDescription>
+              Los siguientes {skippedProducts.length} productos fueron omitidos porque su proveedor tiene la opción &quot;Omitir IA&quot; activada.
+            </DialogDescription>
+          </DialogHeader>
+          <ScrollArea className="max-h-[400px]">
+            <div className="space-y-1">
+              <div className="grid grid-cols-[80px_1fr_1fr] gap-2 px-3 py-2 bg-muted rounded-md text-xs font-medium text-muted-foreground sticky top-0">
+                <span>ID</span>
+                <span>Modelo</span>
+                <span>Proveedor</span>
+              </div>
+              {skippedProducts.map((p) => (
+                <div
+                  key={p.id}
+                  className="grid grid-cols-[80px_1fr_1fr] gap-2 px-3 py-2 text-sm border-b border-border last:border-0 hover:bg-muted/50 transition-colors"
+                >
+                  <span className="text-muted-foreground font-mono text-xs">{p.id}</span>
+                  <span className="truncate font-medium">{p.modelo || "-"}</span>
+                  <Badge variant="outline" className="w-fit text-orange-600 border-orange-200 bg-orange-50">
+                    {p.proveedor}
+                  </Badge>
+                </div>
+              ))}
+            </div>
+          </ScrollArea>
+        </DialogContent>
+      </Dialog>
 
       {/* Full-screen Table */}
       <main className="flex-1 overflow-auto">

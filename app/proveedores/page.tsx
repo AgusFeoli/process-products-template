@@ -31,8 +31,10 @@ import {
   removeProveedor,
   importProveedores,
   exportProveedoresXlsx,
+  toggleSkipAi,
   type Proveedor,
 } from "./actions";
+import { Switch } from "@/components/ui/switch";
 import {
   ArrowLeft,
   Upload,
@@ -259,6 +261,29 @@ export default function ProveedoresPage() {
     }
   };
 
+  const handleToggleSkipAi = async (id: number, currentValue: boolean) => {
+    const newValue = !currentValue;
+    // Optimistic update
+    setProveedores((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, skip_ai: newValue } : p))
+    );
+    try {
+      const result = await toggleSkipAi(id, newValue);
+      if (!result.success) {
+        // Revert on error
+        setProveedores((prev) =>
+          prev.map((p) => (p.id === id ? { ...p, skip_ai: currentValue } : p))
+        );
+        toast.error(result.error || "Error al actualizar");
+      }
+    } catch (err) {
+      setProveedores((prev) =>
+        prev.map((p) => (p.id === id ? { ...p, skip_ai: currentValue } : p))
+      );
+      toast.error(err instanceof Error ? err.message : "Error al actualizar");
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="h-screen bg-background flex items-center justify-center">
@@ -355,6 +380,7 @@ export default function ProveedoresPage() {
                   { key: "codigo", label: "Código" },
                   { key: "nombre", label: "Nombre" },
                   { key: "tipo", label: "Tipo (magma / magmaxmagma)" },
+                  { key: "skip_ai", label: "Omitir IA" },
                 ].map((col) => {
                   const isCurrentSort = sortColumn === col.key;
                   return (
@@ -399,6 +425,14 @@ export default function ProveedoresPage() {
                   </td>
                   <td className="border-b border-border px-4 py-2 text-muted-foreground">
                     {p.tipo || "-"}
+                  </td>
+                  <td className="border-b border-border px-4 py-2">
+                    <div className="flex items-center justify-center">
+                      <Switch
+                        checked={!!p.skip_ai}
+                        onCheckedChange={() => handleToggleSkipAi(p.id!, !!p.skip_ai)}
+                      />
+                    </div>
                   </td>
                   <td className="border-b border-border px-4 py-2">
                     <div className="flex items-center gap-1">
