@@ -1,4 +1,4 @@
-// CSV column mapping: Spanish CSV headers -> lowercase DB columns
+// Excel column mapping: Spanish Excel headers -> lowercase DB columns
 export const CSV_COLUMN_MAP: Record<string, string> = {
   "Proveedor": "proveedor",
   "Modelo": "modelo",
@@ -16,26 +16,29 @@ export const CSV_COLUMN_MAP: Record<string, string> = {
   "IA": "ia",
 };
 
-// Reverse mapping: DB columns -> Spanish CSV headers
+// Reverse mapping: DB columns -> Spanish Excel headers
 export const DB_TO_CSV_MAP: Record<string, string> = Object.fromEntries(
   Object.entries(CSV_COLUMN_MAP).map(([csv, db]) => [db, csv])
 );
 
-// Fixed CSV column order for export (does NOT include image, created_at, updated_at)
-export const CSV_EXPORT_ORDER = [
+// Fixed Excel column order for export - matches the exact import format
+export const XLSX_EXPORT_ORDER = [
   "Proveedor",
   "Modelo",
   "Descripción",
-  "Descripción e-Shop",
   "Composición",
   "Nuevo",
   "Preventa",
   "Sale",
   "Outlet",
+  "Descripción e-Shop",
   "Repite Color",
   "Prioridad",
   "Video",
 ];
+
+// Keep CSV_EXPORT_ORDER as alias for backward compatibility
+export const CSV_EXPORT_ORDER = XLSX_EXPORT_ORDER;
 
 // DB column order for table display (includes all columns)
 export const TABLE_COLUMN_ORDER = [
