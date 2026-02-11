@@ -48,22 +48,26 @@ export async function findAllImagesForModelo(
     return [];
   }
 
-  const modeloLower = modelo.toLowerCase().trim();
-  
+  const modeloLower = modelo.toLowerCase().trim().replace(/%+$/, '');
+  if (!modeloLower) {
+    return [];
+  }
+
+  const escapeLike = (s: string) => s.replace(/[%_\\]/g, '\\$&');
+  const modeloEscaped = escapeLike(modeloLower);
+
   // Extract base modelo if it has a color suffix (format: modelo_color, e.g., "51701_9")
   // Pattern: ends with _ followed by digits
   const colorSuffixMatch = modeloLower.match(/^(.+)_(\d+)$/);
   const baseModelo = colorSuffixMatch ? colorSuffixMatch[1] : null;
   const isColorVariant = baseModelo !== null;
-  
+
   try {
     const sql = getSql();
-    
-    // Build search patterns: always search for full modelo, and also base if it's a color variant
-    const searchPatterns: string[] = [`%${modeloLower}%`];
+
+    const searchPatterns: string[] = [`%${modeloEscaped}%`];
     if (isColorVariant && baseModelo) {
-      searchPatterns.push(`%${baseModelo}%`);
-      console.log(`[ImageMatcher] Modelo con color detectado: "${modeloLower}" -> también buscando base: "${baseModelo}"`);
+      searchPatterns.push(`%${escapeLike(baseModelo)}%`);
     }
     
     // Search for images that contain any of the search patterns
@@ -101,11 +105,8 @@ export async function findAllImagesForModelo(
     }
 
     if (candidates.length === 0) {
-      console.log(`[ImageMatcher] No se encontraron candidatos para modelo: "${modeloLower}"`);
       return [];
     }
-    
-    console.log(`[ImageMatcher] Encontrados ${candidates.length} candidatos para modelo: "${modeloLower}"`);
 
     // Score all candidates
     const scoredMatches: MatchedImage[] = [];
@@ -178,15 +179,7 @@ export async function findAllImagesForModelo(
 
     // Sort by score (descending) and return top matches
     scoredMatches.sort((a, b) => b.score - a.score);
-    const result = scoredMatches.slice(0, maxImages);
-    
-    if (result.length > 0) {
-      console.log(`[ImageMatcher] Modelo "${modeloLower}": ${result.length} imágenes encontradas (mejor score: ${result[0].score}, ${result[0].matchedBy})`);
-    } else {
-      console.log(`[ImageMatcher] Modelo "${modeloLower}": No se encontraron imágenes con score >= 30`);
-    }
-    
-    return result;
+    return scoredMatches.slice(0, maxImages);
   } catch (error) {
     console.error(`Error finding images for modelo ${modelo}:`, error);
     return [];

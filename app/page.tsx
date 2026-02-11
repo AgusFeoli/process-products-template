@@ -34,7 +34,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Database, Upload, RefreshCw, Download, AlertCircle, Loader2, ArrowUp, ArrowDown, ArrowUpDown, Trash2, Sparkles, Square, FolderSync, Image, Settings, Users, Ban, Search, X } from "lucide-react";
+import { Database, Upload, RefreshCw, Download, AlertCircle, Loader2, ArrowUp, ArrowDown, ArrowUpDown, Trash2, Sparkles, Square, FolderSync, Image, ImageOff, Settings, Users, Ban, Search, X } from "lucide-react";
 import Link from "next/link";
 import { PromptConfig } from "@/components/prompt-config";
 import { DescriptionVariantsModal } from "@/components/description-variants-modal";
@@ -69,6 +69,7 @@ export default function Home() {
     errors: number;
     skipped?: number;
     skippedByProvider?: number;
+    skippedNoImage?: number;
     currentBatch: number;
     totalBatches: number;
     lastError: string;
@@ -78,6 +79,7 @@ export default function Home() {
 
   // Skipped products state
   const [skippedProducts, setSkippedProducts] = useState<SkippedProduct[]>([]);
+  const [skippedNoImageProducts, setSkippedNoImageProducts] = useState<SkippedProduct[]>([]);
 
   // AI Review dialog state
   const [isReviewDialogOpen, setIsReviewDialogOpen] = useState(false);
@@ -528,12 +530,14 @@ export default function Home() {
               const statusData = await statusRes.json();
               const changes: PendingChange[] = statusData.pendingChanges || [];
               const skipped: SkippedProduct[] = statusData.skippedByProviderList || [];
+              const noImage: SkippedProduct[] = statusData.skippedNoImageList || [];
 
               setPendingChanges(changes);
               setSkippedProducts(skipped);
+              setSkippedNoImageProducts(noImage);
 
               // Open review dialog if there are changes or skipped products
-              if (changes.length > 0 || skipped.length > 0) {
+              if (changes.length > 0 || skipped.length > 0 || noImage.length > 0) {
                 setIsReviewDialogOpen(true);
               }
             } catch {
@@ -914,6 +918,12 @@ export default function Home() {
                     {processingStats.withImage}
                   </span>
                 )}
+                {(processingStats.skippedNoImage ?? 0) > 0 && (
+                  <span className="text-amber-600 flex items-center gap-1">
+                    <ImageOff className="h-3 w-3" />
+                    Sin imagen: {processingStats.skippedNoImage}
+                  </span>
+                )}
                 {(processingStats.skippedByProvider ?? 0) > 0 && (
                   <span className="text-orange-500 flex items-center gap-1">
                     <Ban className="h-3 w-3" />
@@ -971,6 +981,7 @@ export default function Home() {
         onOpenChange={setIsReviewDialogOpen}
         pendingChanges={pendingChanges}
         skippedProducts={skippedProducts}
+        skippedNoImageProducts={skippedNoImageProducts}
         onConfirm={handleConfirmChanges}
         onDiscard={handleDiscardChanges}
         onSaveDescriptions={handleSaveDescriptions}

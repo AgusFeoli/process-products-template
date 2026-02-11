@@ -70,6 +70,7 @@ interface AIReviewDialogProps {
   onOpenChange: (open: boolean) => void;
   pendingChanges: PendingChange[];
   skippedProducts: SkippedProduct[];
+  skippedNoImageProducts?: SkippedProduct[];
   onConfirm: (selectedIds: number[], editedDescriptions?: Record<number, string>) => Promise<void>;
   onDiscard: () => void;
   onSaveDescriptions?: (descriptions: Record<number, string>) => Promise<void>;
@@ -82,6 +83,7 @@ export function AIReviewDialog({
   onOpenChange,
   pendingChanges,
   skippedProducts,
+  skippedNoImageProducts = [],
   onConfirm,
   onDiscard,
   onSaveDescriptions,
@@ -114,11 +116,8 @@ export function AIReviewDialog({
     [pendingChanges]
   );
 
-  // No Image: products processed WITHOUT image (and no old description)
-  const noImageProducts = useMemo(
-    () => pendingChanges.filter((c) => !c.hasImage && !c.oldDescripcionEshop?.trim()),
-    [pendingChanges]
-  );
+  // No Image: products skipped because no image was found on SFTP
+  const noImageProducts = skippedNoImageProducts;
 
   // Counts
   const hasAiGenerated = aiGenerated.length > 0;
@@ -146,15 +145,14 @@ export function AIReviewDialog({
     prevOpenRef.current = open;
   }, [open, pendingChanges, hasAiGenerated, hasEdited, hasNoImage, hasSkipped]);
 
-  // Get current tab's items for filtering
+  // Get current tab's items for filtering (only for PendingChange tabs)
   const currentTabItems = useMemo(() => {
     switch (activeTab) {
       case "ai-generated": return aiGenerated;
       case "edited": return editedProducts;
-      case "no-image": return noImageProducts;
       default: return [];
     }
-  }, [activeTab, aiGenerated, editedProducts, noImageProducts]);
+  }, [activeTab, aiGenerated, editedProducts]);
 
   // Get unique providers across all changes
   const uniqueProveedores = useMemo(() => {
@@ -163,6 +161,9 @@ export function AIReviewDialog({
       if (change.proveedor?.trim()) set.add(change.proveedor.trim());
     }
     for (const p of skippedProducts) {
+      if (p.proveedor?.trim()) set.add(p.proveedor.trim());
+    }
+    for (const p of noImageProducts) {
       if (p.proveedor?.trim()) set.add(p.proveedor.trim());
     }
     return Array.from(set).sort((a, b) => a.localeCompare(b));
@@ -216,6 +217,30 @@ export function AIReviewDialog({
 
     return items;
   }, [skippedProducts, proveedorFilter, searchQuery]);
+
+  // Filter no-image products
+  const filteredNoImage = useMemo(() => {
+    let items = noImageProducts;
+
+    if (proveedorFilter && proveedorFilter !== "__all__") {
+      items = items.filter(
+        (p) => p.proveedor.trim().toLowerCase() === proveedorFilter.toLowerCase()
+      );
+    }
+
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim();
+      items = items.filter(
+        (p) =>
+          p.modelo.toLowerCase().includes(q) ||
+          p.proveedor.toLowerCase().includes(q) ||
+          p.descripcion.toLowerCase().includes(q) ||
+          String(p.id).includes(q)
+      );
+    }
+
+    return items;
+  }, [noImageProducts, proveedorFilter, searchQuery]);
 
   // Count selected in current view
   const selectedInView = useMemo(
@@ -519,21 +544,43 @@ export function AIReviewDialog({
               value="no-image"
               className="flex-1 flex flex-col min-h-0 overflow-hidden mt-0 px-6 pb-0"
             >
-              <ChangesList
-                items={filteredItems}
-                selectedIds={selectedIds}
-                expandedIds={expandedIds}
-                editingIds={editingIds}
-                editedDescriptions={editedDescriptions}
-                onToggleSelect={toggleSelect}
-                onToggleExpand={toggleExpanded}
-                onStartEditing={startEditing}
-                onStopEditing={stopEditing}
-                onUpdateDescription={updateDescription}
-                getEffectiveDescription={getEffectiveDescription}
-                emptyMessage="No hay productos sin imagen"
-                hasFilters={!!searchQuery || proveedorFilter !== "__all__"}
-              />
+              <div className="flex-1 min-h-0 -mx-6 px-6 overflow-y-auto">
+                <div className="space-y-2 pb-4">
+                  <p className="text-sm text-muted-foreground mb-3">
+                    Estos productos no pudieron ser procesados por la IA porque no se
+                    encontr&oacute; su imagen en el FTP.
+                  </p>
+                  {filteredNoImage.length === 0 ? (
+                    <div className="flex items-center justify-center py-12 text-muted-foreground text-sm">
+                      {searchQuery || proveedorFilter !== "__all__"
+                        ? "No se encontraron productos con los filtros aplicados"
+                        : "No hay productos sin imagen"}
+                    </div>
+                  ) : (
+                    filteredNoImage.map((product) => (
+                      <SkippedCard
+                        key={product.id}
+                        product={product}
+                        isExpanded={expandedIds.has(product.id)}
+                        isEditing={editingIds.has(product.id)}
+                        editedDescription={editedDescriptions[product.id]}
+                        onToggleExpand={() => toggleExpanded(product.id)}
+                        onStartEditing={() =>
+                          startEditingSkipped(
+                            product.id,
+                            getEffectiveSkippedDescription(product)
+                          )
+                        }
+                        onStopEditing={() => stopEditing(product.id)}
+                        onUpdateDescription={(text) =>
+                          updateDescription(product.id, text)
+                        }
+                        effectiveDescription={getEffectiveSkippedDescription(product)}
+                      />
+                    ))
+                  )}
+                </div>
+              </div>
             </TabsContent>
           )}
 

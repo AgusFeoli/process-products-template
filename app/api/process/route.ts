@@ -30,6 +30,14 @@ interface SkippedProduct {
   descripcionEshop: string | null;
 }
 
+// Products skipped because no image was found
+interface SkippedNoImage {
+  id: number;
+  modelo: string;
+  proveedor: string;
+  descripcion: string;
+}
+
 // Pending change for review
 export interface PendingChange {
   id: number;
@@ -51,6 +59,7 @@ export interface PendingChange {
 // Processing state (in-memory for this instance)
 let isProcessing = false;
 let skippedByProviderList: SkippedProduct[] = [];
+let skippedNoImageList: SkippedNoImage[] = [];
 let pendingChanges: PendingChange[] = [];
 let currentBatchEngine: BatchEngine<Record<string, unknown>> | null = null;
 let processingStats = {
@@ -60,6 +69,7 @@ let processingStats = {
   errors: 0,
   skipped: 0,
   skippedByProvider: 0,
+  skippedNoImage: 0,
   currentBatch: 0,
   totalBatches: 0,
   lastError: "",
@@ -88,6 +98,7 @@ export async function GET() {
     isProcessing,
     stats: processingStats,
     skippedByProviderList: !isProcessing ? skippedByProviderList : undefined,
+    skippedNoImageList: !isProcessing ? skippedNoImageList : undefined,
     pendingChanges: !isProcessing ? pendingChanges : undefined,
   });
 }
@@ -191,6 +202,7 @@ export async function POST(request: NextRequest) {
       // Clear pending changes after apply
       pendingChanges = [];
       skippedByProviderList = [];
+      skippedNoImageList = [];
 
       return NextResponse.json({
         success: true,
@@ -256,6 +268,7 @@ export async function POST(request: NextRequest) {
   if (action === "discard") {
     pendingChanges = [];
     skippedByProviderList = [];
+    skippedNoImageList = [];
     return NextResponse.json({
       success: true,
       message: "Cambios descartados",
@@ -274,6 +287,7 @@ export async function POST(request: NextRequest) {
   // Start background processing
   isProcessing = true;
   skippedByProviderList = [];
+  skippedNoImageList = [];
   pendingChanges = [];
   processingStats = {
     total: 0,
@@ -282,6 +296,7 @@ export async function POST(request: NextRequest) {
     errors: 0,
     skipped: 0,
     skippedByProvider: 0,
+    skippedNoImage: 0,
     currentBatch: 0,
     totalBatches: 0,
     lastError: "",
@@ -490,21 +505,19 @@ async function processProduct(
   const modelo = String(product.modelo || "");
   const productUpdatedAt = product.updated_at as string | null;
 
-  // Resolve images using indexed DB (fast trigram search + cache)
   let imagePaths: string[] = [];
   let imageBuffers: Buffer[] = [];
   let primaryImagePath: string | null = null;
   let imageModifyTime: Date | null = null;
 
   if (modelo) {
-    const imageMatches = await resolveProductImages(productId, modelo, 5); // Get up to 5 images
+    const imageMatches = await resolveProductImages(productId, modelo, 5);
     if (imageMatches.length > 0) {
-      primaryImagePath = imageMatches[0].imagePath; // First one is primary
+      primaryImagePath = imageMatches[0].imagePath;
       imagePaths = imageMatches.map(m => m.imagePath);
       imageModifyTime = imageMatches[0].imageModifyTime;
 
-      // 3. Download images for multimodal AI (limit to 3 to avoid token limits)
-      const imagesToDownload = imageMatches.slice(0, 3); // Max 3 images for AI
+      const imagesToDownload = imageMatches.slice(0, 3);
       for (const match of imagesToDownload) {
         const buffer = await downloadImageFromSftp(match.imagePath);
         if (buffer) {
@@ -512,6 +525,17 @@ async function processProduct(
         }
       }
     }
+  }
+
+  if (imageBuffers.length === 0) {
+    skippedNoImageList.push({
+      id: productId,
+      modelo: String(product.modelo || ""),
+      proveedor: String(product.proveedor || ""),
+      descripcion: String(product.descripcion || ""),
+    });
+    processingStats.skippedNoImage++;
+    return { skipped: true, hasImage: false };
   }
 
   // 4. Build product data for AI
@@ -530,10 +554,10 @@ async function processProduct(
     imagen: primaryImagePath, // Store primary image path
   };
 
-  // 5. Generate AI description (with images if available)
+  // 5. Generate AI description (with images)
   const newDescription = await generateProductDescription(
     productData,
-    imageBuffers.length > 0 ? imageBuffers : null,
+    imageBuffers,
     promptTemplate
   );
 
