@@ -1,6 +1,12 @@
-import { neon } from "@neondatabase/serverless";
+import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
 
-const sql = neon(process.env.DATABASE_URL!);
+let _sql: NeonQueryFunction<false, false> | null = null;
+function getSql() {
+  if (!_sql) {
+    _sql = neon(process.env.DATABASE_URL!);
+  }
+  return _sql;
+}
 
 const PROVEEDORES_TABLE = "proveedores";
 
@@ -14,6 +20,7 @@ export interface Proveedor {
 
 // Ensure proveedores table exists
 export async function ensureProveedoresTable(): Promise<void> {
+  const sql = getSql();
   await sql`
     CREATE TABLE IF NOT EXISTS proveedores (
       id SERIAL PRIMARY KEY,
@@ -34,6 +41,7 @@ export async function ensureProveedoresTable(): Promise<void> {
 // Get all proveedores
 export async function getProveedores(): Promise<Proveedor[]> {
   await ensureProveedoresTable();
+  const sql = getSql();
   const result = await sql`
     SELECT id, codigo, nombre, tipo, COALESCE(skip_ai, false) as skip_ai FROM proveedores ORDER BY codigo ASC
   `;
@@ -43,10 +51,11 @@ export async function getProveedores(): Promise<Proveedor[]> {
 // Get proveedores with skip_ai = true (names list for AI processing)
 export async function getSkipAiProveedorNames(): Promise<string[]> {
   await ensureProveedoresTable();
+  const sql = getSql();
   const result = await sql`
     SELECT nombre FROM proveedores WHERE skip_ai = true
   `;
-  return result.map((r: { nombre: string }) => r.nombre);
+  return result.map((r) => r.nombre as string);
 }
 
 // Insert a single proveedor
@@ -54,6 +63,7 @@ export async function insertProveedor(
   proveedor: Omit<Proveedor, "id">
 ): Promise<Proveedor> {
   await ensureProveedoresTable();
+  const sql = getSql();
   const result = await sql`
     INSERT INTO proveedores (codigo, nombre, tipo, skip_ai)
     VALUES (${proveedor.codigo}, ${proveedor.nombre}, ${proveedor.tipo || ''}, ${proveedor.skip_ai || false})
@@ -68,6 +78,7 @@ export async function insertProveedoresBulk(
   proveedores: Omit<Proveedor, "id">[]
 ): Promise<{ inserted: number; errors: string[] }> {
   await ensureProveedoresTable();
+  const sql = getSql();
   let inserted = 0;
   const errors: string[] = [];
 
@@ -120,17 +131,20 @@ export async function updateProveedor(
   updates.push(`updated_at = NOW()`);
   values.push(id);
 
+  const sql = getSql();
   const query = `UPDATE ${PROVEEDORES_TABLE} SET ${updates.join(", ")} WHERE id = $${paramIndex}`;
   await sql(query, values);
 }
 
 // Delete a proveedor
 export async function deleteProveedor(id: number): Promise<void> {
+  const sql = getSql();
   await sql`DELETE FROM proveedores WHERE id = ${id}`;
 }
 
 // Delete all proveedores
 export async function deleteAllProveedores(): Promise<{ deletedCount: number }> {
+  const sql = getSql();
   const countResult = await sql`SELECT COUNT(*) as count FROM proveedores`;
   const count = Number(countResult[0]?.count || 0);
   await sql`DELETE FROM proveedores`;
