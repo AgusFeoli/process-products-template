@@ -1,7 +1,13 @@
-import { neon } from "@neondatabase/serverless";
+import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
 
-// Neon serverless SQL client
-const sql = neon(process.env.DATABASE_URL!);
+// Neon serverless SQL client (lazy-initialized to avoid build-time errors)
+let _sql: NeonQueryFunction<false, false> | null = null;
+function getSql() {
+  if (!_sql) {
+    _sql = neon(process.env.DATABASE_URL!);
+  }
+  return _sql;
+}
 
 // Table configuration - set this to your existing table name
 const TARGET_TABLE = process.env.TARGET_TABLE || "products";
@@ -26,6 +32,7 @@ export interface TableData {
 
 // Get table schema
 export async function getTableSchema(tableName: string): Promise<TableColumn[]> {
+  const sql = getSql();
   const result = await sql`
     SELECT
       c.column_name as name,
@@ -50,6 +57,7 @@ export async function getTableSchema(tableName: string): Promise<TableColumn[]> 
 
 // Get all data from the target table
 export async function getTableData(): Promise<TableData> {
+  const sql = getSql();
   const columns = await getTableSchema(TARGET_TABLE);
   const primaryKey = columns.find((c) => c.isPrimary)?.name || null;
 
@@ -73,6 +81,7 @@ export async function insertRows(
     return { inserted: 0, errors: [] };
   }
 
+  const sql = getSql();
   const columns = await getTableSchema(TARGET_TABLE);
   const columnNames = columns.map((c) => c.name);
 
@@ -162,6 +171,7 @@ export async function updateCell(
   columnName: string,
   value: string | null
 ): Promise<void> {
+  const sql = getSql();
   const columns = await getTableSchema(TARGET_TABLE);
   const columnNames = columns.map((c) => c.name);
   const primaryKey = columns.find((c) => c.isPrimary)?.name;
@@ -187,6 +197,7 @@ export async function updateCell(
 
 // Delete a row
 export async function deleteRow(primaryKeyValue: string | number): Promise<void> {
+  const sql = getSql();
   const columns = await getTableSchema(TARGET_TABLE);
   const primaryKey = columns.find((c) => c.isPrimary)?.name;
 
@@ -200,6 +211,7 @@ export async function deleteRow(primaryKeyValue: string | number): Promise<void>
 
 // Delete all rows
 export async function deleteAllRows(): Promise<{ deletedCount: number }> {
+  const sql = getSql();
   // First get the count
   const countResult = await sql(`SELECT COUNT(*) as count FROM "${TARGET_TABLE}"`);
   const count = Number(countResult[0]?.count || 0);
@@ -212,6 +224,7 @@ export async function deleteAllRows(): Promise<{ deletedCount: number }> {
 
 // Add a new empty row
 export async function addRow(): Promise<TableRow> {
+  const sql = getSql();
   // Insert with default values and return the new row
   const query = `INSERT INTO "${TARGET_TABLE}" DEFAULT VALUES RETURNING *`;
   const result = await sql(query);
@@ -221,6 +234,7 @@ export async function addRow(): Promise<TableRow> {
 
 // List all tables in the database
 export async function listTables(): Promise<string[]> {
+  const sql = getSql();
   const result = await sql`
     SELECT table_name
     FROM information_schema.tables
@@ -234,6 +248,7 @@ export async function listTables(): Promise<string[]> {
 // Test database connection
 export async function testConnection(): Promise<boolean> {
   try {
+    const sql = getSql();
     await sql`SELECT 1`;
     return true;
   } catch {
