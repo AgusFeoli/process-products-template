@@ -35,7 +35,7 @@ export async function GET(request: NextRequest) {
 
     const contentType = contentTypes[extension || ""] || "image/jpeg";
 
-    return new NextResponse(imageBuffer, {
+    return new NextResponse(new Uint8Array(imageBuffer), {
       status: 200,
       headers: {
         "Content-Type": contentType,
