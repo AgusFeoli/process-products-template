@@ -36,6 +36,7 @@ import {
 } from "@/components/ui/select";
 import { Database, Upload, RefreshCw, Download, AlertCircle, Loader2, ArrowUp, ArrowDown, ArrowUpDown, Trash2, Sparkles, Square, FolderSync, Image, ImageOff, Settings, Users, Ban, Search, X } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { PromptConfig } from "@/components/prompt-config";
 import { DescriptionVariantsModal } from "@/components/description-variants-modal";
 import { Login } from "@/components/login";
@@ -45,6 +46,7 @@ import { AIReviewDialog, type PendingChange, type SkippedProduct } from "@/compo
 type SortDirection = "asc" | "desc" | null;
 
 export default function Home() {
+  const router = useRouter();
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
   const [tableData, setTableData] = useState<TableData | null>(null);
@@ -107,6 +109,7 @@ export default function Home() {
   // Search and filter state
   const [searchQuery, setSearchQuery] = useState("");
   const [proveedorFilter, setProveedorFilter] = useState<string>("__all__");
+  const [isNavigatingProveedores, setIsNavigatingProveedores] = useState(false);
 
   // Order columns according to TABLE_COLUMN_ORDER
   const orderedColumns = useMemo(() => {
@@ -723,16 +726,23 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-2">
-            <Link href="/proveedores">
-              <Button
-                variant="outline"
-                size="sm"
-                className="text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50"
-              >
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={isNavigatingProveedores}
+              className="text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50"
+              onClick={() => {
+                setIsNavigatingProveedores(true);
+                router.push("/proveedores");
+              }}
+            >
+              {isNavigatingProveedores ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
                 <Users className="h-4 w-4" />
-                <span className="ml-2">Proveedores</span>
-              </Button>
-            </Link>
+              )}
+              <span className="ml-2">Proveedores</span>
+            </Button>
 
             <AlertDialog>
               <AlertDialogTrigger asChild>

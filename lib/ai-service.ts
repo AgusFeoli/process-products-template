@@ -8,19 +8,10 @@ interface ImageInstructionsConfig {
   multiple: string;
 }
 
-interface CTAInstructionsConfig {
-  nuevo: string;
-  preventa: string;
-  sale: string;
-  outlet: string;
-  default: string;
-}
-
 // Cache for variable configurations
 let configCache: {
   imageInstructions?: ImageInstructionsConfig;
   productContext?: string;
-  ctaInstructions?: CTAInstructionsConfig;
   lastFetch?: number;
 } = {};
 
@@ -30,14 +21,12 @@ const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 async function loadVariableConfigs(): Promise<{
   imageInstructions?: ImageInstructionsConfig;
   productContext?: string;
-  ctaInstructions?: CTAInstructionsConfig;
 }> {
   // Check cache first
   if (configCache.lastFetch && Date.now() - configCache.lastFetch < CACHE_TTL) {
     return {
       imageInstructions: configCache.imageInstructions,
       productContext: configCache.productContext,
-      ctaInstructions: configCache.ctaInstructions,
     };
   }
 
@@ -47,12 +36,11 @@ async function loadVariableConfigs(): Promise<{
     }
 
     const sql = neon(process.env.DATABASE_URL);
-    
+
     const result = await sql`
-      SELECT 
+      SELECT
         image_instructions_config,
-        product_context_config,
-        cta_instructions_config
+        product_context_config
       FROM ai_prompt_config
       ORDER BY updated_at DESC, id DESC
       LIMIT 1
@@ -65,21 +53,18 @@ async function loadVariableConfigs(): Promise<{
       const configs = {
         imageInstructions: result[0].image_instructions_config as ImageInstructionsConfig | null,
         productContext: result[0].product_context_config as string | null,
-        ctaInstructions: result[0].cta_instructions_config as CTAInstructionsConfig | null,
       };
 
       // Update cache
       configCache = {
         imageInstructions: configs.imageInstructions || undefined,
         productContext: configs.productContext || undefined,
-        ctaInstructions: configs.ctaInstructions || undefined,
         lastFetch: Date.now(),
       };
 
       return {
         imageInstructions: configs.imageInstructions || undefined,
         productContext: configs.productContext || undefined,
-        ctaInstructions: configs.ctaInstructions || undefined,
       };
     }
   } catch (error) {
@@ -224,154 +209,30 @@ const DEFAULT_PROMPT_TEMPLATE = `Eres un especialista experto en redacción de p
 
 IMPORTANTE - IDIOMA Y ESTILO:
 - Todo el contenido debe estar en ESPAÑOL LATINO RIOPLATENSE (estilo Argentina/Uruguay - Cono Sur).
-- Usá el voseo: "vos" en lugar de "tú" (ej: "llevate", "descubrí", "sumá", "elegí", "no te pierdas").
+- Usá el voseo: "vos" en lugar de "tú" (ej: "llevate", "descubrí", "sumá", "elegí").
 - Usá expresiones naturales del Río de la Plata.
 - Esta es una marca uruguaya que busca atraer clientas con productos **EXCLUSIVOS** y **ORIGINALES**.
 - El tono debe ser elegante y aspiracional, destacando la exclusividad y originalidad del producto.
-- Los llamados a la acción (CTAs) deben transmitir **urgencia** y **exclusividad**.
 {{IMAGE_INSTRUCTIONS}}
-DATOS DEL PRODUCTO:  
+DATOS DEL PRODUCTO:
 {{PRODUCT_CONTEXT}}
 
-INSTRUCCIONES:  
-1. Escribí una descripción en **texto continuo sin párrafos separados** (máximo 60 palabras). El texto debe fluir de forma continua, sin saltos de línea ni párrafos.  
-2. Empezá captando la atención con un tono elegante y aspiracional, adecuado a una marca exclusiva.  
-3. Destacá los **beneficios** y **características principales** del producto – su estilo, diseño y materiales – no solo las especificaciones técnicas frías. Mostrá qué lo hace especial y deseable.  
-4. Incluí detalles específicos del diseño y la calidad del producto, tal como se ven en las imágenes o se infieren de los datos (ej.: corte de la prenda, tipo de tela, detalles de terminación, funcionalidad). Usá frases breves y descriptivas para cada aspecto, manteniendo la fluidez del texto.  
-5. Si se proporciona información sobre la **composición o materiales**, mencionála de forma clara y atractiva. Podés integrarla al final de la descripción (ej.: "Confeccionado en algodón y lino de alta calidad", o "Composición: 100% cuero genuino").  
-6. **No** incluyas información sobre el precio, descuentos ni promociones en la descripción. (Esos datos se muestran por separado en el e-commerce).  
-7. Si el producto está en oferta, liquidación u outlet, **no** lo menciones en la descripción. (Evitá frases como "precio rebajado" o similares).  
-8. Si el producto es nuevo, de temporada actual o una **edición limitada/exclusiva**, podés mencionarlo sutilmente para generar entusiasmo (ej.: "nueva colección", "edición especial de la temporada"), pero sin exagerar ni distraer de la descripción principal.  
+INSTRUCCIONES:
+1. Escribí una descripción en **texto continuo sin párrafos separados** (máximo 60 palabras). El texto debe fluir de forma continua, sin saltos de línea ni párrafos.
+2. Empezá captando la atención con un tono elegante y aspiracional, adecuado a una marca exclusiva.
+3. Destacá los **beneficios** y **características principales** del producto – su estilo, diseño y materiales – no solo las especificaciones técnicas frías. Mostrá qué lo hace especial y deseable.
+4. Incluí detalles específicos del diseño y la calidad del producto, tal como se ven en las imágenes o se infieren de los datos (ej.: corte de la prenda, tipo de tela, detalles de terminación, funcionalidad). Usá frases breves y descriptivas para cada aspecto, manteniendo la fluidez del texto.
+5. Si se proporciona información sobre la **composición o materiales**, mencionála de forma clara y atractiva. Podés integrarla al final de la descripción (ej.: "Confeccionado en algodón y lino de alta calidad", o "Composición: 100% cuero genuino").
+6. **No** incluyas información sobre el precio, descuentos ni promociones en la descripción. (Esos datos se muestran por separado en el e-commerce).
+7. Si el producto está en oferta, liquidación u outlet, **no** lo menciones en la descripción. (Evitá frases como "precio rebajado" o similares).
+8. Si el producto es nuevo, de temporada actual o una **edición limitada/exclusiva**, podés mencionarlo sutilmente para generar entusiasmo (ej.: "nueva colección", "edición especial de la temporada"), pero sin exagerar ni distraer de la descripción principal.
 9. **No** uses emojis ni caracteres especiales innecesarios. Mantené un estilo profesional y sofisticado.
 10. **No** incluyas referencias a "imágenes" o comandos; la descripción debe leerse como un texto escrito por un redactor humano, no por una IA siguiendo instrucciones.
 11. **NUNCA describas el color del producto.** La misma descripción se usa para todas las variantes de color del producto, por lo que no debe mencionar ningún color específico. Evitá frases como "en color negro", "tono blanco", "azul marino", etc. Si ves colores en las imágenes, ignoralos completamente en la descripción.
-12. **SOBRE EL CALL-TO-ACTION (CTA)**:
-    - El CTA es **OPCIONAL**. Solo incluilo si realmente suma valor y urgencia a la descripción.
-    - Si la descripción ya es convincente y completa, podés finalizarla sin CTA.
-    - Si decidís incluir un CTA, debe ser creativo y variado.
-    - El CTA debe estar en español rioplatense y enfatizar **exclusividad** y **urgencia** cuando sea apropiado.
-{{CTA_INSTRUCTIONS}}
+12. **NO incluyas llamados a la acción (CTAs) ni frases de venta.** La descripción debe ser puramente informativa y descriptiva. Evitá frases como "¡Compralo ahora!", "No te lo pierdas", "Aprovechá esta oportunidad", "Sumalo a tu colección", "Llevatelo ya", "Descubrí esta pieza única", o cualquier otra frase que intente persuadir a la compra. La descripción debe terminar de forma natural, sin cerrar con una invitación a comprar.
 
-**DESCRIPCIÓN:**  
+**DESCRIPCIÓN:**
 *(A continuación, redactá la descripción siguiendo todas las instrucciones anteriores. No incluyas títulos ni etiquetas, solo el texto descriptivo en texto continuo sin párrafos separados ni saltos de línea.)*`;
-
-// Build CTA instructions based on product attributes
-function buildCTAInstructions(
-  product: ProductData,
-  customConfig?: CTAInstructionsConfig
-): string {
-  // Use custom config if provided
-  if (customConfig) {
-    const isNuevo = isTrue(product.nuevo);
-    const isPreventa = isTrue(product.preventa);
-    const isSale = isTrue(product.sale);
-    const isOutlet = isTrue(product.outlet);
-
-    // Priority order: Outlet > Sale > Preventa > Nuevo
-    if (isOutlet) return customConfig.outlet;
-    if (isSale) return customConfig.sale;
-    if (isPreventa) return customConfig.preventa;
-    if (isNuevo) return customConfig.nuevo;
-    return customConfig.default;
-  }
-  
-  // Default behavior
-  const isNuevo = isTrue(product.nuevo);
-  const isPreventa = isTrue(product.preventa);
-  const isSale = isTrue(product.sale);
-  const isOutlet = isTrue(product.outlet);
-
-  // Priority order: Outlet > Sale > Preventa > Nuevo
-  // If multiple attributes, use the highest priority one
-  
-  if (isOutlet) {
-    return `
-**INSTRUCCIONES ESPECÍFICAS PARA EL CTA (Call to Action):**
-- El producto está marcado como **OUTLET** (liquidación final).
-- El CTA debe enfatizar **última oportunidad**, **stock limitado**, **no volver a encontrar** y **liquidación final**.
-- Ejemplos de CTAs apropiados en rioplatense (usá como inspiración, pero creá el tuyo propio):
-  *"¡Última oportunidad! No volverás a encontrarlo"*
-  *"Stock limitado, no te quedes sin el tuyo"*
-  *"Liquidación final, aprovechá antes de que se agote"*
-  *"Últimas unidades, no te lo pierdas"*
-  *"Esta es tu última chance, llevatelo ya"*
-  *"No volverás a verlo a este precio"*
-  *"Aprovechá esta liquidación, quedan pocos"*
-  *"Última oportunidad de tenerlo"*
-- Variá completamente el CTA. Sé creativo y evita repetir estructuras similares.
-`;
-  }
-
-  if (isSale) {
-    return `
-**INSTRUCCIONES ESPECÍFICAS PARA EL CTA (Call to Action):**
-- El producto está marcado como **SALE** (en oferta).
-- El CTA debe enfatizar **oportunidad**, **aprovechar la oferta** y **no perder el momento**.
-- Ejemplos de CTAs apropiados en rioplatense (usá como inspiración, pero creá el tuyo propio):
-  *"¡Aprovechá esta oferta especial!"*
-  *"No dejes pasar esta oportunidad"*
-  *"Sumalo a tu guardarropa, es tu momento"*
-  *"Llevatelo ahora, está en oferta"*
-  *"Aprovechá el precio especial"*
-  *"No te pierdas esta oportunidad única"*
-  *"Hacelo tuyo mientras está en oferta"*
-  *"Es el momento ideal para sumarlo"*
-- Variá completamente el CTA. Sé creativo y evita repetir estructuras similares. El CTA de SALE debe ser diferente al de OUTLET.
-`;
-  }
-
-  if (isPreventa) {
-    return `
-**INSTRUCCIONES ESPECÍFICAS PARA EL CTA (Call to Action):**
-- El producto está marcado como **PREVENTA**.
-- El CTA debe enfatizar **reservar**, **asegurar**, **anticiparse** y **ser de los primeros**.
-- Ejemplos de CTAs apropiados en rioplatense (usá como inspiración, pero creá el tuyo propio):
-  *"Reservá el tuyo ahora y asegurate de tenerlo"*
-  *"Sé de los primeros en llevártelo"*
-  *"Anticipate y reservalo ya"*
-  *"Asegurá tu pieza, reservalo ahora"*
-  *"No te quedes sin el tuyo, reservalo"*
-  *"Reservalo antes que se agote"*
-  *"Asegurá tu lugar, es preventa"*
-  *"Anticipate y llevatelo primero"*
-- Variá completamente el CTA. Sé creativo y evita repetir estructuras similares.
-`;
-  }
-
-  if (isNuevo) {
-    return `
-**INSTRUCCIONES ESPECÍFICAS PARA EL CTA (Call to Action):**
-- El producto está marcado como **NUEVO**.
-- El CTA debe enfatizar **novedad**, **exclusividad**, **estar a la vanguardia** y **ser de los primeros**.
-- Ejemplos de CTAs apropiados en rioplatense (usá como inspiración, pero creá el tuyo propio):
-  *"Descubrí esta novedad exclusiva"*
-  *"Sé de los primeros en tenerlo"*
-  *"Llevate el tuyo, es edición nueva"*
-  *"No te pierdas esta pieza única"*
-  *"Sumalo a tu colección, es tendencia"*
-  *"Está nuevo, descubrilo primero"*
-  *"Novedad exclusiva, llevatela ya"*
-  *"Sé la primera en tenerlo"*
-- Variá completamente el CTA. Sé creativo y evita repetir estructuras similares.
-`;
-  }
-
-  // Default CTA if no specific attributes
-  return `
-**INSTRUCCIONES ESPECÍFICAS PARA EL CTA (Call to Action):**
-- El CTA debe enfatizar **exclusividad** y **urgencia** de adquirir el producto.
-- Ejemplos de CTAs apropiados en rioplatense (usá como inspiración, pero creá el tuyo propio):
-  *"¡Llevate el tuyo antes de que se agote!"*
-  *"Descubrí esta pieza única y exclusiva"*
-  *"No te lo pierdas"*
-  *"Sumalo a tu colección ahora"*
-  *"Hacelo tuyo, quedan pocas unidades"*
-  *"Llevatelo, es exclusivo"*
-  *"No dejes pasar esta oportunidad"*
-  *"Sumalo a tu guardarropa ya"*
-- Variá completamente el CTA. Sé creativo y evita repetir estructuras similares.
-`;
-  }
 
 // Build image instruction text
 function buildImageInstruction(
@@ -379,7 +240,7 @@ function buildImageInstruction(
   customConfig?: ImageInstructionsConfig
 ): string {
   if (imageCount === 0) return "";
-  
+
   // Use custom config if provided
   if (customConfig) {
     if (imageCount === 1) {
@@ -387,7 +248,18 @@ function buildImageInstruction(
     }
     return customConfig.multiple.replace(/\{\{IMAGE_COUNT\}\}/g, imageCount.toString());
   }
-  
+
+  // Shared classification strategy for all image counts
+  const classificationBlock = `
+**ESTRATEGIA DE CLASIFICACIÓN DE PRENDA (OBLIGATORIO):**
+- **PASO 1 - EXAMINÁ TODAS LAS IMÁGENES:** Mirá CADA UNA de las imágenes en detalle antes de decidir qué producto es.
+- **PASO 2 - IDENTIFICÁ EL PRODUCTO PRINCIPAL:** Las imágenes pueden mostrar el producto desde diferentes ángulos o con otros items. Identificá cuál es el producto principal que se está vendiendo.
+- **PASO 3 - CLASIFICÁ POR TIPO:** Categorías posibles: **parte superior** (remera, blusa, camisa, sweater, campera, chaleco, top, etc.), **parte inferior** (pantalón, jean, falda, short, bermuda, etc.), **conjunto completo/enterizo** (vestido, enterito, mono, jumpsuit, etc.), **accesorio** (cartera, bolso, cinturón, bufanda, etc.), **calzado** (zapato, bota, sandalia, etc.), **otro** (traje de baño, ropa interior, etc.).
+- **CRÍTICO:** Una foto recortada o de detalle puede ser engañosa. Una foto de cerca de un cuello NO significa que sea solo un top; puede ser parte de un vestido.
+- Buscá evidencia del largo total de la prenda en TODAS las imágenes: cómo cae sobre el cuerpo, si cubre piernas, torso, o ambos.
+- Si ves múltiples productos en las imágenes (ej: arriba y abajo), determiná cuál es el producto principal basándote en cuál ocupa más espacio o está más destacado.
+- **NUNCA** te bases en una sola imagen para clasificar. Usá la evidencia visual conjunta de TODAS las imágenes.`;
+
   // Default behavior
   if (imageCount === 1) {
     return `
@@ -396,16 +268,21 @@ function buildImageInstruction(
 - Describí el estilo, textura y características visibles que hacen al producto especial.
 - **NO describas el color del producto.** La misma descripción se usa para todas las variantes de color.
 - Usá la imagen para enriquecer la descripción con detalles que solo se aprecian en la foto (ej: tipo de estampado, forma del cuello, acabados, accesorios incluidos, etc.).
+${classificationBlock}
+- NOTA: Solo tenés 1 imagen. Intentá determinar el tipo de prenda a partir de las pistas visuales disponibles (largo, forma, silueta). Si la imagen es un detalle o recorte, sé conservador en la clasificación y enfocate en lo que se puede confirmar visualmente.
 `;
   }
 
   return `
 [INSTRUCCIONES DE IMAGEN - solo si hay imágenes]
 - Tenés **${imageCount}** imágenes del producto para analizar.
+- **IMPORTANTE: Analizá TODAS las ${imageCount} imágenes ANTES de empezar a redactar.** No te bases en la primera imagen solamente.
 - Analizá **todas** las imágenes para extraer un panorama completo de los detalles visuales.
 - Describí el estilo, textura, detalles y características visibles desde diferentes ángulos.
 - **NO describas el color del producto.** La misma descripción se usa para todas las variantes de color.
 - Mencioná los distintos aspectos que se aprecian en cada imagen (vista frontal, detalles de primer plano, dorso, interior, etc.) para brindar una descripción rica y completa.
+${classificationBlock}
+- Con ${imageCount} imágenes, tenés múltiples ángulos y vistas. Usá esta ventaja para confirmar el tipo de prenda con certeza antes de describir.
 `;
 }
 
@@ -413,22 +290,20 @@ function buildImageInstruction(
 async function buildPrompt(
   productContext: string,
   imageCount: number,
-  product: ProductData,
   customTemplate?: string
 ): Promise<string> {
   const template = customTemplate || DEFAULT_PROMPT_TEMPLATE;
-  
+
   // Load variable configs
   const configs = await loadVariableConfigs();
-  
+
   const imageInstruction = buildImageInstruction(imageCount, configs.imageInstructions);
-  const ctaInstructions = buildCTAInstructions(product, configs.ctaInstructions);
-  
-  // Replace placeholders
+
+  // Replace placeholders - CTA instructions are no longer used
   return template
     .replace(/\{\{IMAGE_INSTRUCTIONS\}\}/g, imageInstruction)
     .replace(/\{\{PRODUCT_CONTEXT\}\}/g, productContext)
-    .replace(/\{\{CTA_INSTRUCTIONS\}\}/g, ctaInstructions);
+    .replace(/\{\{CTA_INSTRUCTIONS\}\}/g, ""); // Remove CTA placeholder entirely
 }
 
 // Generate e-commerce product description using AI (text only or with images)
@@ -457,7 +332,7 @@ export async function generateProductDescription(
 
   // Text-only generation
   const model = client.chat(getModelName());
-  const prompt = await buildPrompt(productContext, 0, product, customPromptTemplate);
+  const prompt = await buildPrompt(productContext, 0, customPromptTemplate);
 
   try {
     const result = await generateText({
@@ -468,7 +343,8 @@ export async function generateProductDescription(
     });
 
     // Remove line breaks and replace with spaces, then fix punctuation
-    const cleanedText = result.text.replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim();
+    let cleanedText = result.text.replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim();
+    cleanedText = removeCTAs(cleanedText);
     return fixSpanishPunctuation(cleanedText);
   } catch (error) {
     console.error("AI generation error:", error);
@@ -487,7 +363,7 @@ async function generateMultimodalDescription(
   customPromptTemplate?: string
 ): Promise<string> {
   const model = client.chat(getVisionModelName());
-  const prompt = await buildPrompt(productContext, imageBuffers.length, product, customPromptTemplate);
+  const prompt = await buildPrompt(productContext, imageBuffers.length, customPromptTemplate);
 
   // Convert buffers to base64 data URLs
   const imageContents = imageBuffers.map(buffer => {
@@ -519,14 +395,15 @@ async function generateMultimodalDescription(
     });
 
     // Remove line breaks and replace with spaces, then fix punctuation
-    const cleanedText = result.text.replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim();
+    let cleanedText = result.text.replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim();
+    cleanedText = removeCTAs(cleanedText);
     return fixSpanishPunctuation(cleanedText);
   } catch (error) {
     // If multimodal fails, fall back to text-only
     console.warn("Multimodal generation failed, falling back to text-only:", error);
     
     const textModel = client.chat(getModelName());
-    const textPrompt = await buildPrompt(productContext, 0, product, customPromptTemplate);
+    const textPrompt = await buildPrompt(productContext, 0, customPromptTemplate);
     
     const result = await generateText({
       model: textModel,
@@ -536,7 +413,8 @@ async function generateMultimodalDescription(
     });
 
     // Remove line breaks and replace with spaces, then fix punctuation
-    const cleanedText = result.text.replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim();
+    let cleanedText = result.text.replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim();
+    cleanedText = removeCTAs(cleanedText);
     return fixSpanishPunctuation(cleanedText);
   }
 }
@@ -568,6 +446,71 @@ function detectImageMimeType(buffer: Buffer): string {
   }
   // Default to JPEG
   return "image/jpeg";
+}
+
+// Remove CTAs (Call-to-Action phrases) from text
+function removeCTAs(text: string): string {
+  // Common CTA patterns in Spanish that should be removed
+  // These phrases typically appear at the end of descriptions
+  const ctaPatterns = [
+    // Stock/availability urgency (includes "asegurate", "stock", etc.)
+    /\s*[¡!]?\s*(?:asegurat[ea]\s+(?:el\s+)?tuy[oa]|asegurat[ea]\s+(?:tu\s+)?(?:prenda|pieza|lugar)|antes\s+de\s+que\s+(?:se\s+)?agot[ée]\s+(?:el\s+)?stock|stock\s+limitado|últimas?\s+unidades?|ultimas?\s+unidades?|pocas?\s+unidades?|últimos?\s+disponibles?|ultimos?\s+disponibles?)[\s\S]*?[.!]?$/gi,
+    // Direct purchase commands
+    /\s*[¡!]?\s*(?:compralo|cómpralo|comprala|cómprala|comprar|adquiere|adquirilo|adquirila|llevalo|llévalo|llevatela|llevatelo|llevatela|obtenelo|obtenela|conseguido|conseguida|conseguilo|conseguido|adquierelo|adquierela)[\s\S]*?[.!]?$/gi,
+    // Urgency phrases
+    /\s*[¡!]?\s*(?:no\s+te\s+lo\s+pierdas?|no\s+te\s+la\s+pierdas?|aprovech[aá]|aprovech[aá]\s+esta\s+oportunidad|ultima\s+oportunidad|última\s+oportunidad|tiempo\s+limitado|por\s+tiempo\s+limitado|no\s+esperes\s+más|no\s+esperes\s+mas)[\s\S]*?[.!]?$/gi,
+    // Collection/possession phrases
+    /\s*[¡!]?\s*(?:sumalo\s+a\s+tu\s+colección|sumala\s+a\s+tu\s+colección|sumalo\s+a\s+tu\s+coleccion|sumala\s+a\s+tu\s+coleccion|hacelo\s+tuyo|hacela\s+tuya|hacelas\s+tuyas|hacelos\s+tuyos|tenelo\s+cerca|tenela\s+cerca)[\s\S]*?[.!]?$/gi,
+    // Discovery phrases used as CTAs
+    /\s*[¡!]?\s*(?:descubr[íi]\s+(?:esta\s+)?(?:pieza|prenda|bolsos?|zapatos?|accesorio)[\s\S]*?|descubr[íi]\s+el\s+(?:estilo|diseño|encanto)[\s\S]*?)[.!]?$/gi,
+    // Invitation to buy phrases
+    /\s*[¡!]?\s*(?:eleg[íi]lo|eleg[íi]la|eleg[íi]\s+(?:tu\s+)?(?:talle|color|estilo)|encargalo|encargala|reservalo|reserala)[\s\S]*?[.!]?$/gi,
+    // General CTAs at end of sentence
+    /\s*[¡!]?\s*(?:y[aá]\s+disponible|disponible\s+y[aá]|disponible\s+ahora|compralo\s+ahora|comprala\s+ahora|cómpralo\s+ahora|cómprala\s+ahora)[\s\S]*?[.!]?$/gi,
+    // "Make it yours" type endings
+    /\s*[¡!]?\s*(?:hacelo\s+tuyo|hacela\s+tuya|hacelos\s+tuyos|hacelas\s+tuyas)\s*[.!]?$/gi,
+    // Visit/shop phrases
+    /\s*[¡!]?\s*(?:visit[aá]|conoc[eé]|explor[aá]|mir[aá]|vere?\s+m[aá]s|ver\s+mas|chequealo|chequeala)[\s\S]*?[.!]?$/gi,
+    // Possession with "ya" or "hoy"
+    /\s*[¡!]?\s*(?:llevatelo\s+ya|llevatela\s+ya|llevatelo\s+hoy|llevatela\s+hoy|tenelo\s+ya|tenela\s+ya|consiguelo\s+ya|consiguela\s+ya)[\s\S]*?[.!]?$/gi,
+    // "Hoy" (today) urgency CTAs
+    /\s*[¡!]?\s*(?:hoy\s+mismo|esta\s+semana|esta\s+temporada|ahora\s+mismo|en\s+este\s+momento)[\s\S]*?[.!]?$/gi,
+    // "Tu" (your) possession phrases
+    /\s*[¡!]?\s*(?:sé\s+la\s+primera|se\s+la\s+primera|sé\s+el\s+primero|se\s+el\s+primero|llev[aá]telo\s+antes|llev[aá]tela\s+antes)[\s\S]*?[.!]?$/gi,
+  ];
+
+  let result = text;
+  for (const pattern of ctaPatterns) {
+    result = result.replace(pattern, '');
+  }
+
+  // Additional cleanup: Remove any sentence at the end that contains CTA keywords
+  // This catches combinations and variations we might have missed
+  const ctaKeywords = [
+    'asegurate', 'asegúrate', 'stock', 'agote', 'agot', 'última', 'ultima',
+    'compralo', 'cómpralo', 'comprala', 'cómprala', 'llevalo', 'llévalo',
+    'hacelo tuyo', 'hacela tuya', 'no te lo pierdas', 'no te la pierdas',
+    'aprovechá', 'aprovecha', 'tu colección', 'tu coleccion', 'hoy mismo',
+    'ahora mismo', 'ya disponible', 'disponible ya', 'consiguelo', 'consíguelo',
+    'consiguela', 'consíguela', 'obtenelo', 'obtenela', 'únicas', 'unicas',
+    'exclusivo', 'exclusiva', 'limitad'
+  ];
+
+  // Split into sentences and check the last one for CTA keywords
+  const sentences = result.split(/(?<=[.!?])\s+/);
+  if (sentences.length > 1) {
+    const lastSentence = sentences[sentences.length - 1].toLowerCase();
+    const isCTA = ctaKeywords.some(keyword => lastSentence.includes(keyword));
+    if (isCTA) {
+      sentences.pop();
+      result = sentences.join(' ');
+    }
+  }
+
+  // Clean up any trailing punctuation or whitespace issues
+  result = result.replace(/\s+[.,;:]+$/, '').replace(/\s+$/, '');
+
+  return result.trim();
 }
 
 // Fix Spanish punctuation: ensure ¡/¿ are paired with !/?

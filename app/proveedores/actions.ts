@@ -8,6 +8,7 @@ import {
   deleteProveedor as deleteProveedorDb,
   deleteAllProveedores as deleteAllProveedoresDb,
   getSkipAiProveedorNames,
+  resetAiForProveedor,
   type Proveedor,
 } from "@/lib/proveedores-db";
 import * as XLSX from "xlsx";
@@ -270,10 +271,23 @@ export async function removeAllProveedores(): Promise<{
 export async function toggleSkipAi(
   id: number,
   skipAi: boolean
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; resetCount?: number; error?: string }> {
   try {
     await updateProveedorDb(id, { skip_ai: skipAi });
-    return { success: true };
+
+    // When skip_ai is turned OFF, reset ia flag on all products from this
+    // provider so they get picked up for AI processing again.
+    let resetCount = 0;
+    if (!skipAi) {
+      // Get the provider's codigo to match against products
+      const proveedores = await getProveedoresFromDb();
+      const prov = proveedores.find((p) => p.id === id);
+      if (prov) {
+        resetCount = await resetAiForProveedor(prov.codigo);
+      }
+    }
+
+    return { success: true, resetCount };
   } catch (error) {
     console.error("Toggle skip_ai error:", error);
     return {

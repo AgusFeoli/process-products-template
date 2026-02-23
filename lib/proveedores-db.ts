@@ -58,6 +58,23 @@ export async function getSkipAiProveedorNames(): Promise<string[]> {
   return result.map((r) => r.nombre as string);
 }
 
+// Get all identifiers (codigo + nombre) for skip_ai providers
+// Products may store proveedor as the numeric codigo or the text nombre,
+// so we return both to ensure correct matching.
+export async function getSkipAiProveedorIdentifiers(): Promise<string[]> {
+  await ensureProveedoresTable();
+  const sql = getSql();
+  const result = await sql`
+    SELECT codigo, nombre FROM proveedores WHERE skip_ai = true
+  `;
+  const identifiers: string[] = [];
+  for (const r of result) {
+    identifiers.push(String(r.codigo).toLowerCase().trim());
+    identifiers.push(String(r.nombre).toLowerCase().trim());
+  }
+  return identifiers;
+}
+
 // Insert a single proveedor
 export async function insertProveedor(
   proveedor: Omit<Proveedor, "id">
@@ -134,6 +151,34 @@ export async function updateProveedor(
   const sql = getSql();
   const query = `UPDATE ${PROVEEDORES_TABLE} SET ${updates.join(", ")} WHERE id = $${paramIndex}`;
   await sql(query, values);
+}
+
+// Reset AI processing for all products from a given provider.
+// When skip_ai is turned OFF, products that were previously skipped
+// (and had ia=true set) need to be reprocessed.
+// Products store proveedor as the numeric codigo.
+export async function resetAiForProveedor(proveedorCodigo: number): Promise<number> {
+  const sql = getSql();
+  const TARGET_TABLE = process.env.TARGET_TABLE || "products";
+  const codigoStr = String(proveedorCodigo);
+
+  // Reset ia flag on matching products
+  const result = await sql(
+    `UPDATE "${TARGET_TABLE}" SET ia = false, updated_at = NOW()
+     WHERE LOWER(TRIM(proveedor)) = LOWER(TRIM($1)) AND ia = true
+     RETURNING id`,
+    [codigoStr]
+  );
+
+  // Delete product_ai cache entries for those products so they get fully reprocessed
+  if (result.length > 0) {
+    const ids = result.map((r: Record<string, unknown>) => r.id as number);
+    for (const id of ids) {
+      await sql`DELETE FROM product_ai WHERE product_id = ${id}`;
+    }
+  }
+
+  return result.length;
 }
 
 // Delete a proveedor

@@ -177,8 +177,19 @@ export async function findAllImagesForModelo(
       }
     }
 
-    // Sort by score (descending) and return top matches
-    scoredMatches.sort((a, b) => b.score - a.score);
+    // Sort by score (descending), but prioritize _0 (primary) images as the first result
+    // This ensures the main product image (_0) is shown in the dialog even if other images score higher
+    scoredMatches.sort((a, b) => {
+      // First, prioritize images ending with _0 (primary product image)
+      const aIsPrimary = a.name.toLowerCase().match(/_0\.[^.]+$/);
+      const bIsPrimary = b.name.toLowerCase().match(/_0\.[^.]+$/);
+
+      if (aIsPrimary && !bIsPrimary) return -1;
+      if (!aIsPrimary && bIsPrimary) return 1;
+
+      // Then sort by score
+      return b.score - a.score;
+    });
     return scoredMatches.slice(0, maxImages);
   } catch (error) {
     console.error(`Error finding images for modelo ${modelo}:`, error);
