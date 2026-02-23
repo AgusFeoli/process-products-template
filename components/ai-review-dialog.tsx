@@ -800,6 +800,11 @@ function ChangeCard({
       ? effectiveDescription.slice(0, 150) + "..."
       : effectiveDescription;
 
+  // Determine the image URL to display
+  const imageUrl = change.primaryImagePath
+    ? `/api/images?path=${encodeURIComponent(change.primaryImagePath)}`
+    : null;
+
   return (
     <div
       className={`border rounded-xl transition-all ${
@@ -874,90 +879,122 @@ function ChangeCard({
         </button>
       </div>
 
-      {/* Expanded Detail */}
+      {/* Expanded Detail - 30/70 layout with image on left */}
       {isExpanded && (
-        <div className="px-4 pb-4 pt-0 space-y-3 border-t border-border/50 mx-4 mt-0 pt-3">
-          {/* Old description */}
-          {hasOldDescription && (
-            <div>
-              <div className="flex items-center gap-2 mb-1.5">
-                <div className="h-2 w-2 rounded-full bg-red-400 shrink-0" />
-                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                  Descripción anterior
-                </span>
-              </div>
-              <div className="text-sm text-muted-foreground bg-red-50/50 dark:bg-red-950/10 border border-red-100 dark:border-red-900/30 rounded-lg px-3 py-2.5 leading-relaxed">
-                {change.oldDescripcionEshop}
-              </div>
+        <div className="px-4 pb-4 pt-0 border-t border-border/50 mx-4 mt-0 pt-3">
+          <div className="flex gap-4">
+            {/* Left side: Product Image (30%) */}
+            <div className="w-[30%] shrink-0">
+              {imageUrl ? (
+                <div className="aspect-square rounded-lg overflow-hidden bg-muted border border-border">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={imageUrl}
+                    alt={change.modelo || "Producto"}
+                    className="w-full h-full object-cover"
+                    onError={(e) => {
+                      // Hide broken image and show placeholder
+                      const target = e.target as HTMLImageElement;
+                      target.style.display = "none";
+                      target.nextElementSibling?.classList.remove("hidden");
+                    }}
+                  />
+                  <div className="hidden w-full h-full flex items-center justify-center text-muted-foreground">
+                    <ImageOff className="h-8 w-8" />
+                  </div>
+                </div>
+              ) : (
+                <div className="aspect-square rounded-lg bg-muted border border-border flex items-center justify-center text-muted-foreground">
+                  <ImageOff className="h-8 w-8" />
+                </div>
+              )}
             </div>
-          )}
 
-          {hasOldDescription && (
-            <div className="flex justify-center">
-              <ArrowRight className="h-4 w-4 text-muted-foreground rotate-90" />
-            </div>
-          )}
+            {/* Right side: Content (70%) */}
+            <div className="flex-1 min-w-0 space-y-3">
+              {/* Old description */}
+              {hasOldDescription && (
+                <div>
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <div className="h-2 w-2 rounded-full bg-red-400 shrink-0" />
+                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                      Descripción anterior
+                    </span>
+                  </div>
+                  <div className="text-sm text-muted-foreground bg-red-50/50 dark:bg-red-950/10 border border-red-100 dark:border-red-900/30 rounded-lg px-3 py-2.5 leading-relaxed">
+                    {change.oldDescripcionEshop}
+                  </div>
+                </div>
+              )}
 
-          {/* New/Editable description */}
-          <div>
-            <div className="flex items-center gap-2 mb-1.5">
-              <div className="h-2 w-2 rounded-full bg-green-400 shrink-0" />
-              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                {wasEdited ? "Descripción editada" : "Nueva descripción (IA)"}
-              </span>
-              <div className="ml-auto">
+              {hasOldDescription && (
+                <div className="flex justify-center">
+                  <ArrowRight className="h-4 w-4 text-muted-foreground rotate-90" />
+                </div>
+              )}
+
+              {/* New/Editable description */}
+              <div>
+                <div className="flex items-center gap-2 mb-1.5">
+                  <div className="h-2 w-2 rounded-full bg-green-400 shrink-0" />
+                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                    {wasEdited ? "Descripción editada" : "Nueva descripción (IA)"}
+                  </span>
+                  <div className="ml-auto">
+                    {isEditing ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 text-xs text-green-600 hover:text-green-700"
+                        onClick={onStopEditing}
+                      >
+                        <CheckSquare className="h-3.5 w-3.5 mr-1" />
+                        Listo
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 text-xs"
+                        onClick={onStartEditing}
+                      >
+                        <Pencil className="h-3.5 w-3.5 mr-1" />
+                        Editar
+                      </Button>
+                    )}
+                  </div>
+                </div>
                 {isEditing ? (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 text-xs text-green-600 hover:text-green-700"
-                    onClick={onStopEditing}
-                  >
-                    <CheckSquare className="h-3.5 w-3.5 mr-1" />
-                    Listo
-                  </Button>
+                  <Textarea
+                    value={editedDescription ?? change.newDescripcionEshop}
+                    onChange={(e) => onUpdateDescription(e.target.value)}
+                    className="min-h-[100px] text-sm leading-relaxed"
+                    placeholder="Escribí la descripción..."
+                  />
                 ) : (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 text-xs"
+                  <div
+                    className={`text-sm leading-relaxed rounded-lg px-3 py-2.5 cursor-pointer transition-colors ${
+                      wasEdited
+                        ? "text-foreground bg-blue-50/50 dark:bg-blue-950/10 border border-blue-100 dark:border-blue-900/30"
+                        : "text-foreground bg-green-50/50 dark:bg-green-950/10 border border-green-100 dark:border-green-900/30"
+                    } hover:opacity-80`}
                     onClick={onStartEditing}
+                    title="Click para editar"
                   >
-                    <Pencil className="h-3.5 w-3.5 mr-1" />
-                    Editar
-                  </Button>
+                    {effectiveDescription}
+                  </div>
+                )}
+              </div>
+
+              {/* Product info */}
+              <div className="flex items-center gap-4 text-xs text-muted-foreground pt-1">
+                {change.descripcion && (
+                  <span>
+                    <strong>Producto:</strong> {change.descripcion}
+                  </span>
                 )}
               </div>
             </div>
-            {isEditing ? (
-              <Textarea
-                value={editedDescription ?? change.newDescripcionEshop}
-                onChange={(e) => onUpdateDescription(e.target.value)}
-                className="min-h-[100px] text-sm leading-relaxed"
-                placeholder="Escribí la descripción..."
-              />
-            ) : (
-              <div
-                className={`text-sm leading-relaxed rounded-lg px-3 py-2.5 cursor-pointer transition-colors ${
-                  wasEdited
-                    ? "text-foreground bg-blue-50/50 dark:bg-blue-950/10 border border-blue-100 dark:border-blue-900/30"
-                    : "text-foreground bg-green-50/50 dark:bg-green-950/10 border border-green-100 dark:border-green-900/30"
-                } hover:opacity-80`}
-                onClick={onStartEditing}
-                title="Click para editar"
-              >
-                {effectiveDescription}
-              </div>
-            )}
-          </div>
-
-          {/* Product info */}
-          <div className="flex items-center gap-4 text-xs text-muted-foreground pt-1">
-            {change.descripcion && (
-              <span>
-                <strong>Producto:</strong> {change.descripcion}
-              </span>
-            )}
           </div>
         </div>
       )}

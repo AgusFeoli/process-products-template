@@ -3,7 +3,7 @@ import { neon } from "@neondatabase/serverless";
 import { downloadImageFromSftp } from "@/lib/ftp-service";
 import { resolveProductImages } from "@/lib/image-matcher";
 import { generateProductDescription, type ProductData } from "@/lib/ai-service";
-import { getSkipAiProveedorNames } from "@/lib/proveedores-db";
+import { getSkipAiProveedorIdentifiers } from "@/lib/proveedores-db";
 import { BatchEngine, defaultTransientClassifier, type BatchProgress } from "@/lib/batch-engine";
 
 // Force dynamic rendering - don't analyze during build
@@ -323,6 +323,17 @@ export async function POST(request: NextRequest) {
   });
 }
 
+// Get fresh skip_ai provider identifiers (called per-product for real-time accuracy)
+async function getFreshSkipAiProviders(): Promise<Set<string>> {
+  try {
+    const identifiers = await getSkipAiProveedorIdentifiers();
+    return new Set(identifiers);
+  } catch (err) {
+    console.warn("Could not load skip_ai providers:", err);
+    return new Set();
+  }
+}
+
 // Main processing function — uses BatchEngine for parallel execution
 async function processAllBatches() {
   try {
@@ -331,14 +342,9 @@ async function processAllBatches() {
     // Get prompt template once at the start (will be passed to each product)
     const promptTemplate = await getPromptTemplate();
 
-    // Get skip_ai provider names (normalized to lowercase for comparison)
-    let skipAiProviders: string[] = [];
-    try {
-      const names = await getSkipAiProveedorNames();
-      skipAiProviders = names.map((n) => n.toLowerCase().trim());
-    } catch (err) {
-      console.warn("Could not load skip_ai providers:", err);
-    }
+    // Get skip_ai provider identifiers for initial filtering
+    // Note: We'll re-check at process time for accuracy
+    let initialSkipAiProviders: Set<string> = await getFreshSkipAiProviders();
 
     // Fetch ALL unprocessed products upfront so BatchEngine can size batches
     const allProducts = await sql(
@@ -355,10 +361,11 @@ async function processAllBatches() {
     }
 
     // Separate provider-skipped products before sending to engine
+    // This is an initial pass - we'll re-check in processProduct for accuracy
     const productsToProcess: Record<string, unknown>[] = [];
     for (const product of allProducts) {
       const productProveedor = String(product.proveedor || "").toLowerCase().trim();
-      if (productProveedor && skipAiProviders.includes(productProveedor)) {
+      if (productProveedor && initialSkipAiProviders.has(productProveedor)) {
         // Mark as processed in DB and track as skipped
         const now = new Date().toISOString();
         await sql(
@@ -504,6 +511,31 @@ async function processProduct(
   const productId = product.id as number;
   const modelo = String(product.modelo || "");
   const productUpdatedAt = product.updated_at as string | null;
+  const productProveedor = String(product.proveedor || "").toLowerCase().trim();
+
+  // REAL-TIME CHECK: Re-verify skip_ai status before processing
+  // This catches cases where skip_ai was toggled after the initial batch filtering
+  if (productProveedor) {
+    const currentSkipAiProviders = await getFreshSkipAiProviders();
+    if (currentSkipAiProviders.has(productProveedor)) {
+      // Provider was marked as skip_ai after initial filtering - skip now
+      const sql = getSql();
+      const now = new Date().toISOString();
+      await sql(
+        `UPDATE "${TARGET_TABLE}" SET ia = true, updated_at = $1 WHERE id = $2`,
+        [now, productId]
+      );
+      skippedByProviderList.push({
+        id: productId,
+        modelo: modelo,
+        proveedor: String(product.proveedor || ""),
+        descripcion: String(product.descripcion || ""),
+        descripcionEshop: (product.descripcion_eshop as string) || null,
+      });
+      processingStats.skippedByProvider++;
+      return { skipped: true, hasImage: false };
+    }
+  }
 
   let imagePaths: string[] = [];
   let imageBuffers: Buffer[] = [];
@@ -517,8 +549,9 @@ async function processProduct(
       imagePaths = imageMatches.map(m => m.imagePath);
       imageModifyTime = imageMatches[0].imageModifyTime;
 
-      const imagesToDownload = imageMatches.slice(0, 3);
-      for (const match of imagesToDownload) {
+      // Download ALL matched images so the AI can classify the product
+      // based on complete visual evidence, not just a partial view
+      for (const match of imageMatches) {
         const buffer = await downloadImageFromSftp(match.imagePath);
         if (buffer) {
           imageBuffers.push(buffer);
