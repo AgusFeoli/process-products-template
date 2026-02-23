@@ -205,34 +205,28 @@ function buildProductContext(
 }
 
 // Default prompt template
-const DEFAULT_PROMPT_TEMPLATE = `Eres un especialista experto en redacción de productos para e-commerce. Generá una descripción de producto convincente y atractiva.
+const DEFAULT_PROMPT_TEMPLATE = `Eres un redactor técnico especializado en fichas de producto para e-commerce. Tu trabajo es crear descripciones objetivas, informativas y elegantes.
 
-IMPORTANTE - IDIOMA Y ESTILO:
-- Todo el contenido debe estar en ESPAÑOL LATINO RIOPLATENSE (estilo Argentina/Uruguay - Cono Sur).
-- Usá el voseo: "vos" en lugar de "tú" (ej: "llevate", "descubrí", "sumá", "elegí").
-- Usá expresiones naturales del Río de la Plata.
-- Esta es una marca uruguaya que busca atraer clientas con productos **EXCLUSIVOS** y **ORIGINALES**.
-- El tono debe ser elegante y aspiracional, destacando la exclusividad y originalidad del producto.
+IDIOMA Y TONO:
+- Escribí en ESPAÑOL RIOPLATENSE (Argentina/Uruguay).
+- Tono: Elegante, profesional, informativo.
+- Estilo: Objetivo y descriptivo, como una ficha técnica refinada.
 {{IMAGE_INSTRUCTIONS}}
 DATOS DEL PRODUCTO:
 {{PRODUCT_CONTEXT}}
 
 INSTRUCCIONES:
-1. Escribí una descripción en **texto continuo sin párrafos separados** (máximo 60 palabras). El texto debe fluir de forma continua, sin saltos de línea ni párrafos.
-2. Empezá captando la atención con un tono elegante y aspiracional, adecuado a una marca exclusiva.
-3. Destacá los **beneficios** y **características principales** del producto – su estilo, diseño y materiales – no solo las especificaciones técnicas frías. Mostrá qué lo hace especial y deseable.
-4. Incluí detalles específicos del diseño y la calidad del producto, tal como se ven en las imágenes o se infieren de los datos (ej.: corte de la prenda, tipo de tela, detalles de terminación, funcionalidad). Usá frases breves y descriptivas para cada aspecto, manteniendo la fluidez del texto.
-5. Si se proporciona información sobre la **composición o materiales**, mencionála de forma clara y atractiva. Podés integrarla al final de la descripción (ej.: "Confeccionado en algodón y lino de alta calidad", o "Composición: 100% cuero genuino").
-6. **No** incluyas información sobre el precio, descuentos ni promociones en la descripción. (Esos datos se muestran por separado en el e-commerce).
-7. Si el producto está en oferta, liquidación u outlet, **no** lo menciones en la descripción. (Evitá frases como "precio rebajado" o similares).
-8. Si el producto es nuevo, de temporada actual o una **edición limitada/exclusiva**, podés mencionarlo sutilmente para generar entusiasmo (ej.: "nueva colección", "edición especial de la temporada"), pero sin exagerar ni distraer de la descripción principal.
-9. **No** uses emojis ni caracteres especiales innecesarios. Mantené un estilo profesional y sofisticado.
-10. **No** incluyas referencias a "imágenes" o comandos; la descripción debe leerse como un texto escrito por un redactor humano, no por una IA siguiendo instrucciones.
-11. **NUNCA describas el color del producto.** La misma descripción se usa para todas las variantes de color del producto, por lo que no debe mencionar ningún color específico. Evitá frases como "en color negro", "tono blanco", "azul marino", etc. Si ves colores en las imágenes, ignoralos completamente en la descripción.
-12. **NO incluyas llamados a la acción (CTAs) ni frases de venta.** La descripción debe ser puramente informativa y descriptiva. Evitá frases como "¡Compralo ahora!", "No te lo pierdas", "Aprovechá esta oportunidad", "Sumalo a tu colección", "Llevatelo ya", "Descubrí esta pieza única", o cualquier otra frase que intente persuadir a la compra. La descripción debe terminar de forma natural, sin cerrar con una invitación a comprar.
+1. Escribí una descripción en texto continuo, sin párrafos separados (máximo 60 palabras).
+2. Describí el producto de forma objetiva: diseño, estilo, materiales, características.
+3. Incluí detalles específicos visibles en las imágenes: corte, texturas, terminaciones.
+4. Si hay información de composición o materiales, mencionála claramente.
+5. NO menciones precios, descuentos, promociones u ofertas.
+6. NO describas colores - la descripción se usa para todas las variantes.
+7. NO uses emojis ni caracteres especiales.
+8. La descripción debe ser puramente informativa, similar a una especificación técnica elegante.
 
-**DESCRIPCIÓN:**
-*(A continuación, redactá la descripción siguiendo todas las instrucciones anteriores. No incluyas títulos ni etiquetas, solo el texto descriptivo en texto continuo sin párrafos separados ni saltos de línea.)*`;
+FORMATO DE SALIDA:
+Texto continuo descriptivo del producto. Sin títulos, sin etiquetas, sin párrafos separados.`;
 
 // Build image instruction text
 function buildImageInstruction(
@@ -453,30 +447,34 @@ function removeCTAs(text: string): string {
   // Common CTA patterns in Spanish that should be removed
   // These phrases typically appear at the end of descriptions
   const ctaPatterns = [
+    // "No te quedes sin" variations - MUST BE FIRST
+    /\s*[¡!]?\s*(?:no\s+te\s+quedes?\s+sin\s+(?:el\s+tuyo|la\s+tuya|los\s+tuyos|las\s+tuyas|esta|este|estos|estas))[\s\S]*?[.!,]?$/gi,
     // Stock/availability urgency (includes "asegurate", "stock", etc.)
-    /\s*[¡!]?\s*(?:asegurat[ea]\s+(?:el\s+)?tuy[oa]|asegurat[ea]\s+(?:tu\s+)?(?:prenda|pieza|lugar)|antes\s+de\s+que\s+(?:se\s+)?agot[ée]\s+(?:el\s+)?stock|stock\s+limitado|últimas?\s+unidades?|ultimas?\s+unidades?|pocas?\s+unidades?|últimos?\s+disponibles?|ultimos?\s+disponibles?)[\s\S]*?[.!]?$/gi,
+    /\s*[¡!]?\s*(?:asegurat[ea]\s+(?:el\s+)?tuy[oa]|asegurat[ea]\s+(?:tu\s+)?(?:prenda|pieza|lugar)|antes\s+de\s+que\s+(?:se\s+)?agot[ée]\s+(?:el\s+)?stock|stock\s+limitado|últimas?\s+unidades?|ultimas?\s+unidades?|pocas?\s+unidades?|últimos?\s+disponibles?|ultimos?\s+disponibles?)[\s\S]*?[.!,]?$/gi,
     // Direct purchase commands
-    /\s*[¡!]?\s*(?:compralo|cómpralo|comprala|cómprala|comprar|adquiere|adquirilo|adquirila|llevalo|llévalo|llevatela|llevatelo|llevatela|obtenelo|obtenela|conseguido|conseguida|conseguilo|conseguido|adquierelo|adquierela)[\s\S]*?[.!]?$/gi,
+    /\s*[¡!]?\s*(?:compralo|cómpralo|comprala|cómprala|comprar|adquiere|adquirilo|adquirila|llevalo|llévalo|llevatela|llevatelo|llevatela|obtenelo|obtenela|conseguido|conseguida|conseguilo|conseguido|adquierelo|adquierela)[\s\S]*?[.!,]?$/gi,
     // Urgency phrases
-    /\s*[¡!]?\s*(?:no\s+te\s+lo\s+pierdas?|no\s+te\s+la\s+pierdas?|aprovech[aá]|aprovech[aá]\s+esta\s+oportunidad|ultima\s+oportunidad|última\s+oportunidad|tiempo\s+limitado|por\s+tiempo\s+limitado|no\s+esperes\s+más|no\s+esperes\s+mas)[\s\S]*?[.!]?$/gi,
+    /\s*[¡!]?\s*(?:no\s+te\s+lo\s+pierdas?|no\s+te\s+la\s+pierdas?|no\s+te\s+los\s+pierdas?|no\s+te\s+las\s+pierdas?|aprovech[aá]|aprovech[aá]\s+esta\s+oportunidad|ultima\s+oportunidad|última\s+oportunidad|tiempo\s+limitado|por\s+tiempo\s+limitado|no\s+esperes\s+más|no\s+esperes\s+mas)[\s\S]*?[.!,]?$/gi,
     // Collection/possession phrases
-    /\s*[¡!]?\s*(?:sumalo\s+a\s+tu\s+colección|sumala\s+a\s+tu\s+colección|sumalo\s+a\s+tu\s+coleccion|sumala\s+a\s+tu\s+coleccion|hacelo\s+tuyo|hacela\s+tuya|hacelas\s+tuyas|hacelos\s+tuyos|tenelo\s+cerca|tenela\s+cerca)[\s\S]*?[.!]?$/gi,
+    /\s*[¡!]?\s*(?:sumalo\s+a\s+tu\s+colección|sumala\s+a\s+tu\s+colección|sumalo\s+a\s+tu\s+coleccion|sumala\s+a\s+tu\s+coleccion|hacelo\s+tuyo|hacela\s+tuya|hacelas\s+tuyas|hacelos\s+tuyos|tenelo\s+cerca|tenela\s+cerca)[\s\S]*?[.!,]?$/gi,
     // Discovery phrases used as CTAs
-    /\s*[¡!]?\s*(?:descubr[íi]\s+(?:esta\s+)?(?:pieza|prenda|bolsos?|zapatos?|accesorio)[\s\S]*?|descubr[íi]\s+el\s+(?:estilo|diseño|encanto)[\s\S]*?)[.!]?$/gi,
+    /\s*[¡!]?\s*(?:descubr[íi]\s+(?:esta\s+)?(?:pieza|prenda|bolsos?|zapatos?|accesorio)[\s\S]*?|descubr[íi]\s+el\s+(?:estilo|diseño|encanto)[\s\S]*?)[.!,]?$/gi,
     // Invitation to buy phrases
-    /\s*[¡!]?\s*(?:eleg[íi]lo|eleg[íi]la|eleg[íi]\s+(?:tu\s+)?(?:talle|color|estilo)|encargalo|encargala|reservalo|reserala)[\s\S]*?[.!]?$/gi,
+    /\s*[¡!]?\s*(?:eleg[íi]lo|eleg[íi]la|eleg[íi]\s+(?:tu\s+)?(?:talle|color|estilo)|encargalo|encargala|reservalo|reserala|reservá|reserva)[\s\S]*?[.!,]?$/gi,
     // General CTAs at end of sentence
-    /\s*[¡!]?\s*(?:y[aá]\s+disponible|disponible\s+y[aá]|disponible\s+ahora|compralo\s+ahora|comprala\s+ahora|cómpralo\s+ahora|cómprala\s+ahora)[\s\S]*?[.!]?$/gi,
+    /\s*[¡!]?\s*(?:y[aá]\s+disponible|disponible\s+y[aá]|disponible\s+ahora|compralo\s+ahora|comprala\s+ahora|cómpralo\s+ahora|cómprala\s+ahora)[\s\S]*?[.!,]?$/gi,
     // "Make it yours" type endings
-    /\s*[¡!]?\s*(?:hacelo\s+tuyo|hacela\s+tuya|hacelos\s+tuyos|hacelas\s+tuyas)\s*[.!]?$/gi,
+    /\s*[¡!]?\s*(?:hacelo\s+tuyo|hacela\s+tuya|hacelos\s+tuyos|hacelas\s+tuyas)\s*[.!,]?$/gi,
     // Visit/shop phrases
-    /\s*[¡!]?\s*(?:visit[aá]|conoc[eé]|explor[aá]|mir[aá]|vere?\s+m[aá]s|ver\s+mas|chequealo|chequeala)[\s\S]*?[.!]?$/gi,
+    /\s*[¡!]?\s*(?:visit[aá]|conoc[eé]|explor[aá]|mir[aá]|vere?\s+m[aá]s|ver\s+mas|chequealo|chequeala)[\s\S]*?[.!,]?$/gi,
     // Possession with "ya" or "hoy"
-    /\s*[¡!]?\s*(?:llevatelo\s+ya|llevatela\s+ya|llevatelo\s+hoy|llevatela\s+hoy|tenelo\s+ya|tenela\s+ya|consiguelo\s+ya|consiguela\s+ya)[\s\S]*?[.!]?$/gi,
+    /\s*[¡!]?\s*(?:llevatelo\s+ya|llevatela\s+ya|llevatelo\s+hoy|llevatela\s+hoy|tenelo\s+ya|tenela\s+ya|consiguelo\s+ya|consiguela\s+ya)[\s\S]*?[.!,]?$/gi,
     // "Hoy" (today) urgency CTAs
-    /\s*[¡!]?\s*(?:hoy\s+mismo|esta\s+semana|esta\s+temporada|ahora\s+mismo|en\s+este\s+momento)[\s\S]*?[.!]?$/gi,
+    /\s*[¡!]?\s*(?:hoy\s+mismo|esta\s+semana|esta\s+temporada|ahora\s+mismo|en\s+este\s+momento)[\s\S]*?[.!,]?$/gi,
     // "Tu" (your) possession phrases
-    /\s*[¡!]?\s*(?:sé\s+la\s+primera|se\s+la\s+primera|sé\s+el\s+primero|se\s+el\s+primero|llev[aá]telo\s+antes|llev[aá]tela\s+antes)[\s\S]*?[.!]?$/gi,
+    /\s*[¡!]?\s*(?:sé\s+la\s+primera|se\s+la\s+primera|sé\s+el\s+primero|se\s+el\s+primero|llev[aá]telo\s+antes|llev[aá]tela\s+antes)[\s\S]*?[.!,]?$/gi,
+    // Edition/exclusive phrases at the end
+    /\s*[¡!,]?\s*es\s+una?\s+edici[oó]n[\s\S]*?$/gi,
   ];
 
   let result = text;
@@ -487,13 +485,16 @@ function removeCTAs(text: string): string {
   // Additional cleanup: Remove any sentence at the end that contains CTA keywords
   // This catches combinations and variations we might have missed
   const ctaKeywords = [
+    'no te quedes', 'no te quedes sin', 'quédate', 'quedate',
     'asegurate', 'asegúrate', 'stock', 'agote', 'agot', 'última', 'ultima',
     'compralo', 'cómpralo', 'comprala', 'cómprala', 'llevalo', 'llévalo',
     'hacelo tuyo', 'hacela tuya', 'no te lo pierdas', 'no te la pierdas',
     'aprovechá', 'aprovecha', 'tu colección', 'tu coleccion', 'hoy mismo',
     'ahora mismo', 'ya disponible', 'disponible ya', 'consiguelo', 'consíguelo',
     'consiguela', 'consíguela', 'obtenelo', 'obtenela', 'únicas', 'unicas',
-    'exclusivo', 'exclusiva', 'limitad'
+    'exclusivo', 'exclusiva', 'limitad', 'es una edición', 'es un edición',
+    'edición limitada', 'edicion limitada', 'edición exclusiva', 'edicion exclusiva',
+    'reservá', 'reserva', 'reservalo', 'reservala'
   ];
 
   // Split into sentences and check the last one for CTA keywords
