@@ -14,19 +14,45 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   checkConnection,
-  fetchTableData,
-  importCsv,
+  fetchMaestraData,
+  fetchMagentoData,
+  fetchKeywordStatus,
+  fetchSystemPrompt,
+  updateSystemPrompt,
+  resetSystemPrompt,
   updateCell,
   deleteRow,
   deleteAllRows,
-  exportXlsx,
-  type TableData,
+  exportCsv,
+  exportMagentoCsv,
+  updateMagentoField,
+  type MaestraProduct,
+  type MagentoProduct,
 } from "./actions";
-import { getColumnDisplayName, TABLE_COLUMN_ORDER } from "@/lib/column-mapping";
+import {
+  getMaestraDisplayName,
+  MAESTRA_TABLE_COLUMN_ORDER,
+} from "@/lib/maestra-columns";
+import {
+  MAGENTO_VIEW_COLUMNS,
+  getMagentoDisplayName,
+} from "@/lib/magento-columns";
 import { Progress } from "@/components/ui/progress";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import {
   Select,
   SelectContent,
@@ -34,73 +60,65 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Database, Upload, RefreshCw, Download, AlertCircle, Loader2, ArrowUp, ArrowDown, ArrowUpDown, Trash2, Sparkles, Square, FolderSync, Image, ImageOff, Settings, Users, Ban, Search, X } from "lucide-react";
-import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { PromptConfig } from "@/components/prompt-config";
-import { DescriptionVariantsModal } from "@/components/description-variants-modal";
+import {
+  Upload,
+  RefreshCw,
+  Download,
+  AlertCircle,
+  Loader2,
+  ArrowUp,
+  ArrowDown,
+  ArrowUpDown,
+  Trash2,
+  Search,
+  X,
+  FileSpreadsheet,
+  CheckCircle2,
+  Sparkles,
+  Database,
+  ShoppingCart,
+  Tags,
+  Settings,
+  RotateCcw,
+  Save,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
+  Square,
+  Store,
+} from "lucide-react";
 import { Login } from "@/components/login";
-import { AIReviewDialog, type PendingChange, type SkippedProduct } from "@/components/ai-review-dialog";
 
-// Sort direction type
 type SortDirection = "asc" | "desc" | null;
+type DatasetView = "maestra" | "magento";
 
 export default function Home() {
-  const router = useRouter();
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
-  const [tableData, setTableData] = useState<TableData | null>(null);
+  const [products, setProducts] = useState<MaestraProduct[]>([]);
+  const [magentoProducts, setMagentoProducts] = useState<MagentoProduct[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [isImporting, setIsImporting] = useState(false);
   const [isDeletingAll, setIsDeletingAll] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<{
     connected: boolean;
     tableExists: boolean;
-    tableName: string;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // AI Processing state
-  const [isProcessingAI, setIsProcessingAI] = useState(false);
-  const [processingStats, setProcessingStats] = useState<{
-    total: number;
-    processed: number;
-    success: number;
-    errors: number;
-    skipped?: number;
-    skippedByProvider?: number;
-    skippedNoImage?: number;
-    currentBatch: number;
-    totalBatches: number;
-    lastError: string;
-    withImage?: number;
-    withoutImage?: number;
+  // Dataset view
+  const [activeView, setActiveView] = useState<DatasetView>("maestra");
+
+  // Upload state
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{
+    status: string;
+    inserted?: number;
+    total?: number;
   } | null>(null);
-
-  // Skipped products state
-  const [skippedProducts, setSkippedProducts] = useState<SkippedProduct[]>([]);
-  const [skippedNoImageProducts, setSkippedNoImageProducts] = useState<SkippedProduct[]>([]);
-
-  // AI Review dialog state
-  const [isReviewDialogOpen, setIsReviewDialogOpen] = useState(false);
-  const [pendingChanges, setPendingChanges] = useState<PendingChange[]>([]);
-
-  // Prompt config state
-  const [isPromptConfigOpen, setIsPromptConfigOpen] = useState(false);
-
-  // Description variants modal state
-  const [isVariantsModalOpen, setIsVariantsModalOpen] = useState(false);
-  const [currentVariantsProduct, setCurrentVariantsProduct] = useState<{
-    description: string;
-    productData: any;
-    primaryKey: string | number;
-  } | null>(null);
-
-  // Image indexing state
-  const [isIndexing, setIsIndexing] = useState(false);
-  const [indexedImageCount, setIndexedImageCount] = useState<number>(0);
+  const [showImportConfirm, setShowImportConfirm] = useState(false);
 
   // Sorting state
   const [sortColumn, setSortColumn] = useState<string | null>(null);
@@ -108,37 +126,58 @@ export default function Home() {
 
   // Search and filter state
   const [searchQuery, setSearchQuery] = useState("");
-  const [proveedorFilter, setProveedorFilter] = useState<string>("__all__");
-  const [isNavigatingProveedores, setIsNavigatingProveedores] = useState(false);
+  const [familiaFilter, setFamiliaFilter] = useState<string>("__all__");
 
-  // Order columns according to TABLE_COLUMN_ORDER
-  const orderedColumns = useMemo(() => {
-    if (!tableData?.columns) return [];
+  // Row selection (works for both views)
+  const [selectedMaestraRows, setSelectedMaestraRows] = useState<Set<number>>(new Set());
+  const [selectedMagentoRows, setSelectedMagentoRows] = useState<Set<number>>(new Set());
 
-    const columnMap = new Map(tableData.columns.map(col => [col.name, col]));
-    const ordered: typeof tableData.columns = [];
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize] = useState(50);
 
-    // Add columns in the specified order
-    for (const colName of TABLE_COLUMN_ORDER) {
-      const col = columnMap.get(colName);
-      if (col) {
-        ordered.push(col);
-        columnMap.delete(colName);
-      }
+  // AI generation state
+  const [isGeneratingAi, setIsGeneratingAi] = useState(false);
+  const [aiProgress, setAiProgress] = useState<string | null>(null);
+  const [aiJobId, setAiJobId] = useState<string | null>(null);
+  const [aiJobProgress, setAiJobProgress] = useState<{
+    processed: number;
+    total: number;
+    successful: number;
+    failed: number;
+  } | null>(null);
+  const aiPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Keywords state
+  const [keywordStatus, setKeywordStatus] = useState<{ loaded: boolean; count: number }>({ loaded: false, count: 0 });
+  const [isUploadingKeywords, setIsUploadingKeywords] = useState(false);
+  const keywordFileInputRef = useRef<HTMLInputElement>(null);
+
+  // System prompt state
+  const [showPromptDialog, setShowPromptDialog] = useState(false);
+  const [systemPromptText, setSystemPromptText] = useState("");
+  const [isSavingPrompt, setIsSavingPrompt] = useState(false);
+  const [isLoadingPrompt, setIsLoadingPrompt] = useState(false);
+
+  // Visible columns for current view
+  const visibleColumns = useMemo(() => {
+    if (activeView === "magento") {
+      return MAGENTO_VIEW_COLUMNS as unknown as string[];
     }
+    return MAESTRA_TABLE_COLUMN_ORDER;
+  }, [activeView]);
 
-    // Add any remaining columns not in the order list (like id/primary key)
-    for (const col of columnMap.values()) {
-      ordered.push(col);
-    }
-
-    return ordered;
-  }, [tableData?.columns]);
+  const getDisplayName = useCallback(
+    (col: string) => {
+      if (activeView === "magento") return getMagentoDisplayName(col);
+      return getMaestraDisplayName(col);
+    },
+    [activeView]
+  );
 
   // Handle column header click for sorting
   const handleSort = (columnName: string) => {
     if (sortColumn === columnName) {
-      // Cycle through: asc -> desc -> null
       if (sortDirection === "asc") {
         setSortDirection("desc");
       } else if (sortDirection === "desc") {
@@ -151,7 +190,7 @@ export default function Home() {
     }
   };
 
-  // Check authentication on mount
+  // Check authentication
   useEffect(() => {
     const checkAuth = async () => {
       try {
@@ -173,32 +212,41 @@ export default function Home() {
     setIsAuthenticated(true);
   };
 
-  // Get unique proveedores from data for filter dropdown
-  const uniqueProveedores = useMemo(() => {
-    if (!tableData?.rows) return [];
+  // Current dataset rows
+  const currentRows = useMemo(() => {
+    if (activeView === "magento") {
+      return magentoProducts as unknown as Record<string, unknown>[];
+    }
+    return products as unknown as Record<string, unknown>[];
+  }, [activeView, products, magentoProducts]);
+
+  // Get unique familias for filter (maestra only)
+  const uniqueFamilias = useMemo(() => {
     const set = new Set<string>();
-    for (const row of tableData.rows) {
-      const prov = row.proveedor;
-      if (prov && String(prov).trim()) {
-        set.add(String(prov).trim());
+    for (const row of products) {
+      const fam = row.familia;
+      if (fam && String(fam).trim()) {
+        set.add(String(fam).trim());
       }
     }
     return Array.from(set).sort((a, b) => a.localeCompare(b));
-  }, [tableData?.rows]);
+  }, [products]);
 
   // Filtered rows
   const filteredRows = useMemo(() => {
-    if (!tableData?.rows) return [];
-    let rows = tableData.rows;
+    let rows = currentRows;
 
-    // Filter by proveedor
-    if (proveedorFilter && proveedorFilter !== "__all__") {
-      rows = rows.filter(
-        (row) => String(row.proveedor || "").trim().toLowerCase() === proveedorFilter.toLowerCase()
-      );
+    if (activeView === "maestra") {
+      if (familiaFilter && familiaFilter !== "__all__") {
+        rows = rows.filter(
+          (row) =>
+            String(row.familia || "")
+              .trim()
+              .toLowerCase() === familiaFilter.toLowerCase()
+        );
+      }
     }
 
-    // Filter by search query
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase().trim();
       rows = rows.filter((row) => {
@@ -210,7 +258,7 @@ export default function Home() {
     }
 
     return rows;
-  }, [tableData?.rows, searchQuery, proveedorFilter]);
+  }, [currentRows, searchQuery, familiaFilter, activeView]);
 
   // Sorted rows
   const sortedRows = useMemo(() => {
@@ -222,17 +270,14 @@ export default function Home() {
       const aVal = a[sortColumn];
       const bVal = b[sortColumn];
 
-      // Handle nulls
       if (aVal === null && bVal === null) return 0;
       if (aVal === null) return sortDirection === "asc" ? 1 : -1;
       if (bVal === null) return sortDirection === "asc" ? -1 : 1;
 
-      // Compare values
       if (typeof aVal === "number" && typeof bVal === "number") {
         return sortDirection === "asc" ? aVal - bVal : bVal - aVal;
       }
 
-      // String comparison
       const aStr = String(aVal).toLowerCase();
       const bStr = String(bVal).toLowerCase();
       const comparison = aStr.localeCompare(bStr);
@@ -240,17 +285,45 @@ export default function Home() {
     });
   }, [filteredRows, sortColumn, sortDirection]);
 
+  // Active selection set for current view
+  const selectedRows = activeView === "maestra" ? selectedMaestraRows : selectedMagentoRows;
+  const setSelectedRows = activeView === "maestra" ? setSelectedMaestraRows : setSelectedMagentoRows;
+
+  // Pagination: compute page slice from sortedRows
+  const totalPages = Math.max(1, Math.ceil(sortedRows.length / pageSize));
+  const safePage = Math.min(currentPage, totalPages);
+  const paginatedRows = useMemo(() => {
+    const start = (safePage - 1) * pageSize;
+    return sortedRows.slice(start, start + pageSize);
+  }, [sortedRows, safePage, pageSize]);
+
+  // Reset page when filters/search/sort/view change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, familiaFilter, activeView, sortColumn, sortDirection]);
+
   const loadData = useCallback(async (showLoading = true) => {
     if (showLoading) setIsRefreshing(true);
     setError(null);
 
     try {
-      const result = await fetchTableData();
-      if (result.success && result.data) {
-        setTableData(result.data);
+      const [maestraResult, magentoResult, kwStatus] = await Promise.all([
+        fetchMaestraData(),
+        fetchMagentoData(),
+        fetchKeywordStatus(),
+      ]);
+
+      if (maestraResult.success && maestraResult.data) {
+        setProducts(maestraResult.data);
       } else {
-        setError(result.error || "Failed to load data");
+        setError(maestraResult.error || "Failed to load data");
       }
+
+      if (magentoResult.success && magentoResult.data) {
+        setMagentoProducts(magentoResult.data);
+      }
+
+      setKeywordStatus(kwStatus);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load data");
     } finally {
@@ -270,8 +343,6 @@ export default function Home() {
         setIsLoading(false);
         if (!status.connected) {
           setError("Cannot connect to database. Check DATABASE_URL in .env");
-        } else if (!status.tableExists) {
-          setError(`Table "${status.tableName}" does not exist. Set TARGET_TABLE in .env`);
         }
       }
     };
@@ -291,16 +362,25 @@ export default function Home() {
         toast.success(`Se eliminaron ${result.deletedCount} filas`);
         await loadData();
       } else {
-        toast.error(result.error || "Error al eliminar las filas");
+        toast.error(result.error || "Error al eliminar");
       }
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Error al eliminar las filas");
+      toast.error(err instanceof Error ? err.message : "Error al eliminar");
     } finally {
       setIsDeletingAll(false);
     }
   };
 
   const handleImportClick = () => {
+    if (products.length > 0) {
+      setShowImportConfirm(true);
+    } else {
+      fileInputRef.current?.click();
+    }
+  };
+
+  const handleImportConfirmed = () => {
+    setShowImportConfirm(false);
     fileInputRef.current?.click();
   };
 
@@ -308,75 +388,197 @@ export default function Home() {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    setIsImporting(true);
-    const formData = new FormData();
-    formData.append("file", file);
+    setIsUploading(true);
+    setUploadProgress({ status: "Procesando archivo..." });
 
     try {
-      const result = await importCsv(formData);
-      if (result.success) {
-        toast.success(`Se importaron ${result.inserted} productos`);
-        if (result.errors && result.errors.length > 0) {
-          toast.warning(`${result.errors.length} filas tuvieron errores`);
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("mode", "append");
+
+      const response = await fetch("/api/upload-maestra", {
+        method: "POST",
+        body: formData,
+      });
+      const data = await response.json();
+
+      if (data.success) {
+        setUploadProgress({
+          status: "Completado",
+          inserted: data.inserted,
+          total: data.total,
+        });
+        toast.success(data.message);
+        if (data.errorCount > 0) {
+          toast.warning(`${data.errorCount} filas tuvieron errores`);
         }
         await loadData();
       } else {
-        toast.error(result.error || "Error en la importacion");
+        toast.error(data.message || "Error al importar");
+        setUploadProgress(null);
       }
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Error en la importacion");
+      toast.error(err instanceof Error ? err.message : "Error al importar");
+      setUploadProgress(null);
     } finally {
-      setIsImporting(false);
-      // Reset input
+      setIsUploading(false);
+      setTimeout(() => setUploadProgress(null), 3000);
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
     }
   };
 
-  const handleExport = async () => {
-    const result = await exportXlsx();
-    if (result.success && result.base64) {
-      const byteCharacters = atob(result.base64);
-      const byteNumbers = new Array(byteCharacters.length);
-      for (let i = 0; i < byteCharacters.length; i++) {
-        byteNumbers[i] = byteCharacters.charCodeAt(i);
-      }
-      const byteArray = new Uint8Array(byteNumbers);
-      const blob = new Blob([byteArray], {
-        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  const handleExportMaestra = async () => {
+    const ids = selectedMaestraRows.size > 0 ? Array.from(selectedMaestraRows) : undefined;
+    const result = await exportCsv(ids);
+    if (result.success && result.csv) {
+      const blob = new Blob(["\uFEFF" + result.csv], {
+        type: "text/csv;charset=utf-8;",
       });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = result.filename || "export.xlsx";
+      link.download = result.filename || "export.csv";
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
-      toast.success("Exportado exitosamente");
+      const msg = ids ? `${ids.length} productos exportados` : "Maestra exportada exitosamente";
+      toast.success(msg);
     } else {
-      toast.error(result.error || "Error en la exportacion");
+      toast.error(result.error || "Error al exportar");
+    }
+  };
+
+  const handleExportMagento = async () => {
+    const ids = selectedMagentoRows.size > 0 ? Array.from(selectedMagentoRows) : undefined;
+    const result = await exportMagentoCsv(ids);
+    if (result.success && result.csv) {
+      const blob = new Blob(["\uFEFF" + result.csv], {
+        type: "text/csv;charset=utf-8;",
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = result.filename || "magento-export.csv";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      const msg = ids ? `${ids.length} productos exportados` : "Magento CSV exportado exitosamente";
+      toast.success(msg);
+    } else {
+      toast.error(result.error || "Error al exportar Magento CSV");
+    }
+  };
+
+  const handleKeywordFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsUploadingKeywords(true);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetch("/api/upload-keywords", {
+        method: "POST",
+        body: formData,
+      });
+      const data = await response.json();
+
+      if (data.success) {
+        toast.success(data.message);
+        setKeywordStatus({ loaded: true, count: data.inserted });
+      } else {
+        toast.error(data.message || "Error al importar keywords");
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Error al importar keywords");
+    } finally {
+      setIsUploadingKeywords(false);
+      if (keywordFileInputRef.current) {
+        keywordFileInputRef.current.value = "";
+      }
+    }
+  };
+
+  // System prompt handlers
+  const handleOpenPromptDialog = async () => {
+    setShowPromptDialog(true);
+    setIsLoadingPrompt(true);
+    try {
+      const prompt = await fetchSystemPrompt();
+      setSystemPromptText(prompt);
+    } catch {
+      toast.error("Error al cargar el system prompt");
+    } finally {
+      setIsLoadingPrompt(false);
+    }
+  };
+
+  const handleSavePrompt = async () => {
+    setIsSavingPrompt(true);
+    try {
+      const result = await updateSystemPrompt(systemPromptText);
+      if (result.success) {
+        toast.success("System prompt guardado");
+        setShowPromptDialog(false);
+      } else {
+        toast.error(result.error || "Error al guardar");
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Error al guardar");
+    } finally {
+      setIsSavingPrompt(false);
+    }
+  };
+
+  const handleResetPrompt = async () => {
+    setIsSavingPrompt(true);
+    try {
+      const result = await resetSystemPrompt();
+      if (result.success) {
+        setSystemPromptText(result.prompt);
+        toast.success("System prompt restaurado al original");
+      } else {
+        toast.error(result.error || "Error al restaurar");
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Error al restaurar");
+    } finally {
+      setIsSavingPrompt(false);
     }
   };
 
   const handleCellUpdate = async (
-    primaryKeyValue: string | number,
+    id: number,
     columnName: string,
     value: string
   ) => {
-    const result = await updateCell(primaryKeyValue, columnName, value);
-    if (result.success) {
-      // Recargar datos automáticamente después de actualizar
-      await loadData(false);
-      toast.success("Celda actualizada");
+    if (activeView === "magento") {
+      const result = await updateMagentoField(id, columnName, value);
+      if (result.success) {
+        await loadData(false);
+        toast.success("Celda actualizada");
+      } else {
+        toast.error(result.error || "Error al actualizar");
+      }
     } else {
-      toast.error(result.error || "Error al actualizar");
+      const result = await updateCell(id, columnName, value);
+      if (result.success) {
+        await loadData(false);
+        toast.success("Celda actualizada");
+      } else {
+        toast.error(result.error || "Error al actualizar");
+      }
     }
   };
 
-  const handleDeleteRow = async (primaryKeyValue: string | number) => {
-    const result = await deleteRow(primaryKeyValue);
+  const handleDeleteRow = async (id: number) => {
+    const result = await deleteRow(id);
     if (result.success) {
       toast.success("Fila eliminada");
       await loadData();
@@ -385,277 +587,267 @@ export default function Home() {
     }
   };
 
-  const handleOpenVariantsModal = (
-    description: string,
-    primaryKey: string | number,
-    rowData: any
-  ) => {
-    // Convert row data to ProductData format
-    const productData = {
-      proveedor: rowData.proveedor,
-      modelo: rowData.modelo,
-      descripcion: rowData.descripcion,
-      composicion: rowData.composicion,
-      nuevo: rowData.nuevo,
-      preventa: rowData.preventa,
-      sale: rowData.sale,
-      outlet: rowData.outlet,
-      repite_color: rowData.repite_color,
-      prioridad: rowData.prioridad,
-      video: rowData.video,
-      imagen: rowData.imagen,
-    };
-
-    setCurrentVariantsProduct({
-      description: description || "",
-      productData,
-      primaryKey,
+  // Row selection handlers
+  const toggleRowSelection = (id: number) => {
+    setSelectedRows((prev: Set<number>) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
     });
-    setIsVariantsModalOpen(true);
   };
 
-  // Fetch indexed image count on load
-  useEffect(() => {
-    const fetchIndexedCount = async () => {
-      try {
-        const response = await fetch("/api/index-images");
-        const data = await response.json();
-        setIndexedImageCount(data.dbCount || 0);
-      } catch {
-        // Ignore errors
-      }
-    };
-    fetchIndexedCount();
+  const toggleSelectAll = () => {
+    // Select/deselect all filtered rows (not just current page)
+    if (selectedRows.size === sortedRows.length && sortedRows.length > 0) {
+      setSelectedRows(new Set());
+    } else {
+      setSelectedRows(new Set(sortedRows.map((r) => r.id as number)));
+    }
+  };
+
+  const toggleSelectPage = () => {
+    // Select/deselect rows on current page only
+    const pageIds = new Set(paginatedRows.map((r) => r.id as number));
+    const allPageSelected = paginatedRows.length > 0 && paginatedRows.every((r) => selectedRows.has(r.id as number));
+    if (allPageSelected) {
+      setSelectedRows((prev: Set<number>) => {
+        const next = new Set(prev);
+        pageIds.forEach((id) => next.delete(id));
+        return next;
+      });
+    } else {
+      setSelectedRows((prev: Set<number>) => {
+        const next = new Set(prev);
+        pageIds.forEach((id) => next.add(id));
+        return next;
+      });
+    }
+  };
+
+  // Stop polling for AI job
+  const stopAiPolling = useCallback(() => {
+    if (aiPollingRef.current) {
+      clearInterval(aiPollingRef.current);
+      aiPollingRef.current = null;
+    }
   }, []);
 
-  // Image indexing handler
-  const handleStartIndexing = async () => {
-    setIsIndexing(true);
+  // Stop AI job processing
+  const handleStopAiJob = useCallback(async () => {
+    if (aiJobId) {
+      // Background job — cancel via API
+      try {
+        const response = await fetch("/api/ai-jobs/stop", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ jobId: aiJobId }),
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+          stopAiPolling();
+          setIsGeneratingAi(false);
+          setAiJobId(null);
+          toast.success("Procesamiento AI detenido");
+          setAiProgress("Procesamiento detenido por el usuario");
+          setTimeout(() => {
+            setAiProgress(null);
+            setAiJobProgress(null);
+          }, 3000);
+        } else {
+          toast.error(data.message || "Error al detener procesamiento");
+        }
+      } catch (err) {
+        console.error("Error stopping AI job:", err);
+        toast.error("Error al detener procesamiento AI");
+      }
+    } else {
+      // Direct API call — just reset UI state
+      stopAiPolling();
+      setIsGeneratingAi(false);
+      setAiJobId(null);
+      toast.success("Procesamiento AI detenido");
+      setAiProgress("Procesamiento detenido por el usuario");
+      setTimeout(() => {
+        setAiProgress(null);
+        setAiJobProgress(null);
+      }, 3000);
+    }
+  }, [aiJobId, stopAiPolling]);
+
+  // Poll AI job status
+  const pollAiJobStatus = useCallback(
+    async (jobId: string) => {
+      try {
+        const response = await fetch(`/api/ai-jobs/status?jobId=${jobId}`);
+        const data = await response.json();
+
+        if (!data.success || !data.job) {
+          return;
+        }
+
+        const job = data.job;
+
+        setAiJobProgress({
+          processed: job.processedProducts,
+          total: job.totalProducts,
+          successful: job.successfulProducts,
+          failed: job.failedProducts,
+        });
+
+        setAiProgress(
+          `Procesando: ${job.processedProducts} de ${job.totalProducts} productos...`
+        );
+
+        // If products were processed since last check, refresh the data
+        if (job.processedProducts > 0) {
+          await loadData(false);
+        }
+
+        if (job.status === "completed" || job.status === "failed" || job.status === "cancelled") {
+          stopAiPolling();
+          setIsGeneratingAi(false);
+          setAiJobId(null);
+
+          if (job.status === "completed") {
+            const msg = job.failedProducts > 0
+              ? `AI completado: ${job.successfulProducts} exitosos, ${job.failedProducts} fallidos de ${job.totalProducts}`
+              : `AI completado: ${job.successfulProducts} de ${job.totalProducts} productos procesados`;
+            toast.success(msg);
+          } else if (job.status === "cancelled") {
+            toast.success("Procesamiento AI detenido");
+            setAiProgress("Procesamiento detenido por el usuario");
+          } else {
+            toast.error("El procesamiento AI falló. Revisa los errores.");
+          }
+
+          // Keep progress visible for a moment then clear
+          setTimeout(() => {
+            setAiProgress(null);
+            setAiJobProgress(null);
+          }, 3000);
+
+          setSelectedMagentoRows(new Set());
+        }
+      } catch (err) {
+        console.error("Error polling AI job status:", err);
+      }
+    },
+    [loadData, stopAiPolling]
+  );
+
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => {
+      stopAiPolling();
+    };
+  }, [stopAiPolling]);
+
+  // AI generation handler
+  const handleAiGenerate = async (mode: "selected" | "all") => {
+    if (mode === "selected" && selectedMagentoRows.size === 0) {
+      toast.error("Selecciona al menos un producto");
+      return;
+    }
+
+    const count = mode === "selected" ? selectedMagentoRows.size : magentoProducts.length;
+
+    // For small batches (single selection of <=20 products), use direct API call
+    if (mode === "selected" && selectedMagentoRows.size <= 20) {
+      setIsGeneratingAi(true);
+      setAiProgress(`Generando campos AI para ${count} productos...`);
+      setAiJobProgress({ processed: 0, total: count, successful: 0, failed: 0 });
+
+      try {
+        const response = await fetch("/api/generate-magento", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            productIds: Array.from(selectedMagentoRows),
+            mode: "selected",
+          }),
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+          toast.success(data.message);
+          await loadData(false);
+          setSelectedMagentoRows(new Set());
+        } else {
+          toast.error(data.message || "Error al generar con AI");
+        }
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Error al generar con AI");
+      } finally {
+        setIsGeneratingAi(false);
+        setAiProgress(null);
+        setAiJobProgress(null);
+      }
+      return;
+    }
+
+    // For large batches, use background job system
+    setIsGeneratingAi(true);
+    setAiProgress(`Iniciando procesamiento AI para ${count} productos...`);
+    setAiJobProgress({ processed: 0, total: count, successful: 0, failed: 0 });
+
     try {
-      const response = await fetch("/api/index-images", { method: "POST" });
+      const response = await fetch("/api/ai-jobs/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          productIds: mode === "selected" ? Array.from(selectedMagentoRows) : undefined,
+          mode,
+        }),
+      });
+
       const data = await response.json();
 
-      if (data.success) {
-        toast.success("Indexado de imágenes iniciado");
+      if (data.success && data.jobId) {
+        setAiJobId(data.jobId);
+        toast.success(`Procesamiento iniciado: ${data.totalProducts} productos`);
 
-        // Poll for completion
-        const pollInterval = setInterval(async () => {
-          const statusRes = await fetch("/api/index-images");
-          const statusData = await statusRes.json();
-          setIndexedImageCount(statusData.dbCount || 0);
-
-          if (!statusData.isIndexing) {
-            clearInterval(pollInterval);
-            setIsIndexing(false);
-            toast.success(`Indexado completado: ${statusData.dbCount} imágenes`);
-          }
+        // Start polling for progress every 3 seconds
+        stopAiPolling();
+        aiPollingRef.current = setInterval(() => {
+          pollAiJobStatus(data.jobId);
         }, 3000);
       } else {
-        toast.error(data.message || "Error al iniciar indexado");
-        setIsIndexing(false);
+        toast.error(data.message || "Error al iniciar procesamiento AI");
+        setIsGeneratingAi(false);
+        setAiProgress(null);
+        setAiJobProgress(null);
       }
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Error al indexar");
-      setIsIndexing(false);
+      toast.error(err instanceof Error ? err.message : "Error al iniciar procesamiento AI");
+      setIsGeneratingAi(false);
+      setAiProgress(null);
+      setAiJobProgress(null);
     }
   };
 
-  // Play completion sound - Doble Ping
-  const playCompletionSound = useCallback(() => {
-    try {
-      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-      const frequencies = [700, 900];
-      const startTime = audioContext.currentTime;
-      
-      frequencies.forEach((freq, idx) => {
-        const osc = audioContext.createOscillator();
-        const gain = audioContext.createGain();
-        osc.type = "sine";
-        osc.frequency.value = freq;
-        const noteStart = startTime + (idx * 0.1);
-        gain.gain.setValueAtTime(0, noteStart);
-        gain.gain.linearRampToValueAtTime(0.3, noteStart + 0.01);
-        gain.gain.exponentialRampToValueAtTime(0.01, noteStart + 0.15);
-        osc.connect(gain);
-        gain.connect(audioContext.destination);
-        osc.start(noteStart);
-        osc.stop(noteStart + 0.15);
-      });
-    } catch (err) {
-      console.error("Error playing completion sound:", err);
-    }
-  }, []);
-
-  // AI Processing handlers
-  const pollProcessingStatus = useCallback(async () => {
-    try {
-      const response = await fetch("/api/process", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "status" }),
-      });
-      const data = await response.json();
-      setProcessingStats(data.stats);
-      return data.isProcessing;
-    } catch {
-      return false;
-    }
-  }, []);
-
-  const handleStartProcessing = async () => {
-    setIsProcessingAI(true);
-    try {
-      const response = await fetch("/api/process", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-          action: "start"
-        }),
-      });
-      const data = await response.json();
-
-      if (data.success) {
-        toast.success("Procesamiento IA iniciado");
-
-        // Start polling for status
-        const pollInterval = setInterval(async () => {
-          const stillProcessing = await pollProcessingStatus();
-          if (!stillProcessing) {
-            clearInterval(pollInterval);
-            setIsProcessingAI(false);
-            await loadData();
-            toast.success("Procesamiento IA completado");
-            // Play completion sound
-            playCompletionSound();
-            // Fetch pending changes and skipped products for review
-            try {
-              const statusRes = await fetch("/api/process");
-              const statusData = await statusRes.json();
-              const changes: PendingChange[] = statusData.pendingChanges || [];
-              const skipped: SkippedProduct[] = statusData.skippedByProviderList || [];
-              const noImage: SkippedProduct[] = statusData.skippedNoImageList || [];
-
-              setPendingChanges(changes);
-              setSkippedProducts(skipped);
-              setSkippedNoImageProducts(noImage);
-
-              // Open review dialog if there are changes or skipped products
-              if (changes.length > 0 || skipped.length > 0 || noImage.length > 0) {
-                setIsReviewDialogOpen(true);
-              }
-            } catch {
-              // Ignore
-            }
-          }
-        }, 2000);
-      } else {
-        toast.error(data.message || "Error al iniciar procesamiento");
-        setIsProcessingAI(false);
-      }
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Error al iniciar procesamiento");
-      setIsProcessingAI(false);
-    }
+  // Reset sort/search when switching views
+  const handleViewChange = (view: string) => {
+    setActiveView(view as DatasetView);
+    setSortColumn(null);
+    setSortDirection(null);
+    setSearchQuery("");
+    setCurrentPage(1);
   };
 
-  // AI Review dialog handlers
-  const handleConfirmChanges = async (
-    selectedIds: number[],
-    editedDescriptions?: Record<number, string>
-  ) => {
-    try {
-      const response = await fetch("/api/process", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "apply",
-          selectedIds,
-          // Send changes from client as fallback in case server memory was cleared
-          changes: pendingChanges,
-          // Send edited descriptions so server uses them instead of AI-generated
-          editedDescriptions: editedDescriptions || {},
-        }),
-      });
-      const data = await response.json();
-
-      if (data.success) {
-        toast.success(data.message || `Se aplicaron ${data.applied} cambios`);
-        setIsReviewDialogOpen(false);
-        setPendingChanges([]);
-        setSkippedProducts([]);
-        await loadData();
-      } else {
-        toast.error(data.message || "Error al aplicar cambios");
-      }
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Error al aplicar cambios");
-    }
-  };
-
-  const handleSaveDescriptions = async (descriptions: Record<number, string>) => {
-    try {
-      const response = await fetch("/api/process", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "save-descriptions",
-          descriptions,
-        }),
-      });
-      const data = await response.json();
-
-      if (data.success) {
-        toast.success(data.message || `Se guardaron ${data.saved} descripciones`);
-        await loadData();
-      } else {
-        toast.error(data.message || "Error al guardar descripciones");
-      }
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Error al guardar descripciones");
-    }
-  };
-
-  const handleDiscardChanges = async () => {
-    try {
-      await fetch("/api/process", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "discard" }),
-      });
-      setPendingChanges([]);
-      setSkippedProducts([]);
-      toast.info("Cambios descartados");
-    } catch {
-      // Ignore
-    }
-  };
-
-  const handleStopProcessing = async () => {
-    try {
-      const response = await fetch("/api/process", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "stop" }),
-      });
-      const data = await response.json();
-
-      if (data.success) {
-        toast.success("Procesamiento detenido");
-        setIsProcessingAI(false);
-        await loadData();
-      }
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Error al detener procesamiento");
-    }
-  };
-
-  // Show login if not authenticated
+  // Auth check loading
   if (isCheckingAuth) {
     return (
       <div className="h-screen bg-background flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">
           <Loader2 className="h-10 w-10 text-primary animate-spin" />
-          <p className="text-muted-foreground">Verificando autenticación...</p>
+          <p className="text-muted-foreground">Verificando autenticacion...</p>
         </div>
       </div>
     );
@@ -678,7 +870,7 @@ export default function Home() {
   }
 
   // Error state
-  if (error && !tableData) {
+  if (error && products.length === 0) {
     return (
       <div className="h-screen bg-background flex items-center justify-center">
         <div className="flex flex-col items-center gap-4 max-w-md text-center px-4">
@@ -688,8 +880,6 @@ export default function Home() {
           <div className="bg-muted p-4 rounded-lg text-left w-full">
             <p className="text-sm font-mono text-muted-foreground">
               DATABASE_URL=postgresql://user:pass@host:5432/db
-              <br />
-              TARGET_TABLE=products
             </p>
           </div>
           <Button onClick={() => window.location.reload()} variant="outline">
@@ -701,55 +891,134 @@ export default function Home() {
     );
   }
 
+  const totalRows = activeView === "maestra" ? products.length : magentoProducts.length;
+
   return (
     <div className="h-screen flex flex-col bg-background">
-      {/* Hidden file input */}
+      {/* Hidden file inputs */}
       <input
         ref={fileInputRef}
         type="file"
-        accept=".xlsx,.xls,.csv"
+        accept=".xlsx,.xls"
         onChange={handleFileChange}
         className="hidden"
       />
+      <input
+        ref={keywordFileInputRef}
+        type="file"
+        accept=".xlsx,.xls,.csv"
+        onChange={handleKeywordFileChange}
+        className="hidden"
+      />
 
-      {/* Minimal Top Bar */}
+      {/* Import confirmation modal */}
+      <AlertDialog open={showImportConfirm} onOpenChange={setShowImportConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Importar archivo</AlertDialogTitle>
+            <AlertDialogDescription>
+              Ya existen {products.length} registros en la base de datos.
+              Los datos del nuevo archivo se agregaran a los existentes.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={handleImportConfirmed}>
+              Continuar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* System Prompt Dialog */}
+      <Dialog open={showPromptDialog} onOpenChange={setShowPromptDialog}>
+        <DialogContent className="max-w-3xl max-h-[85vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Settings className="h-5 w-5" />
+              System Prompt - AI Generation
+            </DialogTitle>
+            <DialogDescription>
+              Este prompt se usa como instruccion del sistema en cada solicitud de generacion AI.
+              Define el comportamiento, tono, y reglas SEO para la generacion de campos Magento.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex-1 min-h-0 overflow-hidden">
+            {isLoadingPrompt ? (
+              <div className="flex items-center justify-center py-12">
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+              </div>
+            ) : (
+              <Textarea
+                value={systemPromptText}
+                onChange={(e) => setSystemPromptText(e.target.value)}
+                className="w-full h-[50vh] font-mono text-sm resize-none"
+                placeholder="Escribe el system prompt aqui..."
+              />
+            )}
+          </div>
+          <DialogFooter className="flex items-center justify-between sm:justify-between gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleResetPrompt}
+              disabled={isSavingPrompt || isLoadingPrompt}
+              className="text-orange-600 hover:text-orange-700 hover:bg-orange-50"
+            >
+              <RotateCcw className="h-4 w-4 mr-1.5" />
+              Restaurar Original
+            </Button>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowPromptDialog(false)}
+                disabled={isSavingPrompt}
+              >
+                Cancelar
+              </Button>
+              <Button
+                size="sm"
+                onClick={handleSavePrompt}
+                disabled={isSavingPrompt || isLoadingPrompt}
+              >
+                {isSavingPrompt ? (
+                  <Loader2 className="h-4 w-4 animate-spin mr-1.5" />
+                ) : (
+                  <Save className="h-4 w-4 mr-1.5" />
+                )}
+                Guardar
+              </Button>
+            </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Top Bar */}
       <header className="shrink-0 border-b border-border bg-background px-4 py-2">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <Database className="h-5 w-5 text-primary" />
-            <span className="font-semibold">{tableData?.tableName || "Productos"}</span>
+            <img
+              src="/cannon-logo.png"
+              alt="Cannon Home"
+              className="h-6 object-contain"
+            />
+            <span className="text-muted-foreground">|</span>
+            <span className="font-semibold">Maestra de Productos</span>
             <span className="text-sm text-muted-foreground">
-              {sortedRows.length !== (tableData?.rows.length || 0)
-                ? `${sortedRows.length} / ${tableData?.rows.length || 0} filas`
-                : `${tableData?.rows.length || 0} filas`}
+              {sortedRows.length !== totalRows
+                ? `${sortedRows.length} / ${totalRows} filas`
+                : `${totalRows} filas`}
             </span>
           </div>
 
           <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={isNavigatingProveedores}
-              className="text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50"
-              onClick={() => {
-                setIsNavigatingProveedores(true);
-                router.push("/proveedores");
-              }}
-            >
-              {isNavigatingProveedores ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Users className="h-4 w-4" />
-              )}
-              <span className="ml-2">Proveedores</span>
-            </Button>
-
             <AlertDialog>
               <AlertDialogTrigger asChild>
                 <Button
                   variant="outline"
                   size="sm"
-                  disabled={isDeletingAll || !tableData?.rows.length}
+                  disabled={isDeletingAll || products.length === 0}
                   className="text-destructive hover:text-destructive hover:bg-destructive/10"
                 >
                   {isDeletingAll ? (
@@ -762,9 +1031,9 @@ export default function Home() {
               </AlertDialogTrigger>
               <AlertDialogContent>
                 <AlertDialogHeader>
-                  <AlertDialogTitle>Eliminar todas las filas</AlertDialogTitle>
+                  <AlertDialogTitle>Eliminar todos los registros</AlertDialogTitle>
                   <AlertDialogDescription>
-                    Esta accion eliminara permanentemente todas las {tableData?.rows.length || 0} filas de la tabla. Esta accion no se puede deshacer.
+                    Esta accion eliminara permanentemente todos los {products.length} registros de la base de datos. Esta accion no se puede deshacer.
                   </AlertDialogDescription>
                 </AlertDialogHeader>
                 <AlertDialogFooter>
@@ -779,31 +1048,13 @@ export default function Home() {
               </AlertDialogContent>
             </AlertDialog>
 
-             {/* Image Indexing Button */}
-             <Button
-              variant="outline"
-              size="sm"
-              onClick={handleStartIndexing}
-              disabled={isIndexing}
-              className="text-cyan-600 hover:text-cyan-700 hover:bg-cyan-50"
-            >
-              {isIndexing ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <FolderSync className="h-4 w-4" />
-              )}
-              <span className="ml-2">
-                {isIndexing ? "Indexando..." : `Indexar (${indexedImageCount})`}
-              </span>
-            </Button>
-
             <Button
               variant="outline"
               size="sm"
               onClick={handleImportClick}
-              disabled={isImporting}
+              disabled={isUploading}
             >
-              {isImporting ? (
+              {isUploading ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
                 <Upload className="h-4 w-4" />
@@ -821,53 +1072,79 @@ export default function Home() {
               <span className="ml-2">Actualizar</span>
             </Button>
 
-            <Button variant="outline" size="sm" onClick={handleExport}>
+            {/* Export buttons */}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleExportMaestra}
+              disabled={products.length === 0}
+            >
               <Download className="h-4 w-4" />
-              <span className="ml-2">Exportar</span>
+              <span className="ml-2">
+                {selectedMaestraRows.size > 0
+                  ? `Exportar Maestra (${selectedMaestraRows.size})`
+                  : "Exportar Maestra"}
+              </span>
             </Button>
-
-            {/* AI Processing Button */}
-            {isProcessingAI ? (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleStopProcessing}
-                className="text-amber-600 hover:text-amber-700 hover:bg-amber-50"
-              >
-                <Square className="h-4 w-4" />
-                <span className="ml-2">Detener IA</span>
-              </Button>
-            ) : (
-              <Button
-                variant="default"
-                size="sm"
-                onClick={handleStartProcessing}
-                disabled={!tableData?.rows.length}
-                className="bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700"
-              >
-                <Sparkles className="h-4 w-4" />
-                <span className="ml-2">Procesar IA</span>
-              </Button>
-            )}
 
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setIsPromptConfigOpen(true)}
-              className="text-muted-foreground hover:text-foreground"
-              title="Configurar prompt de IA"
+              onClick={handleExportMagento}
+              disabled={products.length === 0}
+              className="border-primary/30 text-primary hover:bg-primary/5"
             >
-              <Settings className="h-4 w-4" />
+              <ShoppingCart className="h-4 w-4" />
+              <span className="ml-2">
+                {selectedMagentoRows.size > 0
+                  ? `Exportar Magento (${selectedMagentoRows.size})`
+                  : "Exportar Magento"}
+              </span>
+            </Button>
+
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => toast.info("Exportación Falabella próximamente")}
+              disabled={products.length === 0}
+              className="border-orange-400/40 text-orange-600 hover:bg-orange-50"
+            >
+              <Store className="h-4 w-4" />
+              <span className="ml-2">Exportar Falabella</span>
+            </Button>
+
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => toast.info("Exportación Tiendas Paris próximamente")}
+              disabled={products.length === 0}
+              className="border-blue-400/40 text-blue-600 hover:bg-blue-50"
+            >
+              <Store className="h-4 w-4" />
+              <span className="ml-2">Exportar Tiendas Paris</span>
             </Button>
           </div>
         </div>
 
-        {/* Search and Filter Bar */}
+        {/* Dataset Tabs + Search/Filter Row */}
         <div className="mt-2 flex items-center gap-3">
+          <Tabs value={activeView} onValueChange={handleViewChange} className="flex-none">
+            <TabsList className="h-8">
+              <TabsTrigger value="maestra" className="text-xs px-3 gap-1.5">
+                <Database className="h-3.5 w-3.5" />
+                Maestra
+              </TabsTrigger>
+              <TabsTrigger value="magento" className="text-xs px-3 gap-1.5">
+                <ShoppingCart className="h-3.5 w-3.5" />
+                Magento
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
+
           <div className="relative flex-1 max-w-sm">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
-              placeholder="Buscar productos..."
+              placeholder={activeView === "maestra" ? "Buscar en Maestra..." : "Buscar en Magento..."}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="pl-9 h-8 text-sm"
@@ -881,145 +1158,216 @@ export default function Home() {
               </button>
             )}
           </div>
-          <Select value={proveedorFilter} onValueChange={setProveedorFilter}>
-            <SelectTrigger className="w-[200px] h-8 text-sm">
-              <SelectValue placeholder="Todos los proveedores" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="__all__">Todos los proveedores</SelectItem>
-              {uniqueProveedores.map((prov) => (
-                <SelectItem key={prov} value={prov}>
-                  {prov}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          {(searchQuery || proveedorFilter !== "__all__") && (
+
+          {activeView === "maestra" && (
+            <Select value={familiaFilter} onValueChange={setFamiliaFilter}>
+              <SelectTrigger className="w-[200px] h-8 text-sm">
+                <SelectValue placeholder="Todas las familias" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__all__">Todas las familias</SelectItem>
+                {uniqueFamilias.map((fam) => (
+                  <SelectItem key={fam} value={fam}>
+                    {fam}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+
+          {activeView === "magento" && (
+            <div className="flex items-center gap-2">
+              {/* Keyword dataset indicator */}
+              <div className="flex items-center gap-1.5 border border-border rounded-md px-2.5 py-1 h-8">
+                <Tags className="h-3.5 w-3.5 text-muted-foreground" />
+                {keywordStatus.loaded ? (
+                  <span className="text-xs text-emerald-600 font-medium">
+                    {keywordStatus.count.toLocaleString()} keywords
+                  </span>
+                ) : (
+                  <span className="text-xs text-muted-foreground">
+                    Sin keywords
+                  </span>
+                )}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => keywordFileInputRef.current?.click()}
+                  disabled={isUploadingKeywords}
+                  className="h-6 px-2 text-xs"
+                >
+                  {isUploadingKeywords ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <span>{keywordStatus.loaded ? "Reemplazar" : "Importar"}</span>
+                  )}
+                </Button>
+              </div>
+
+              {/* System prompt button */}
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleOpenPromptDialog}
+                className="h-8 text-xs gap-1.5"
+              >
+                <Settings className="h-3.5 w-3.5" />
+                <span>Prompt</span>
+              </Button>
+
+              <span className="text-border">|</span>
+
+              {selectedMagentoRows.size > 0 && (
+                <span className="text-xs text-muted-foreground">
+                  {selectedMagentoRows.size} seleccionados
+                </span>
+              )}
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => handleAiGenerate("selected")}
+                disabled={isGeneratingAi || selectedMagentoRows.size === 0}
+                className="h-8 text-xs border-violet-300 text-violet-700 hover:bg-violet-50"
+              >
+                {isGeneratingAi ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Sparkles className="h-3.5 w-3.5" />
+                )}
+                <span className="ml-1.5">AI Seleccionados</span>
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => handleAiGenerate("all")}
+                disabled={isGeneratingAi || magentoProducts.length === 0}
+                className="h-8 text-xs border-violet-300 text-violet-700 hover:bg-violet-50"
+              >
+                {isGeneratingAi ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Sparkles className="h-3.5 w-3.5" />
+                )}
+                <span className="ml-1.5">AI Todos</span>
+              </Button>
+              {isGeneratingAi && (
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  onClick={handleStopAiJob}
+                  className="h-8 text-xs gap-1.5"
+                >
+                  <Square className="h-3 w-3 fill-current" />
+                  <span>Detener</span>
+                </Button>
+              )}
+            </div>
+          )}
+
+          {(searchQuery || familiaFilter !== "__all__") && (
             <span className="text-xs text-muted-foreground">
-              {sortedRows.length} de {tableData?.rows.length || 0} productos
+              {sortedRows.length} de {totalRows} registros
             </span>
           )}
         </div>
 
-        {/* AI Processing Progress Bar */}
-        {isProcessingAI && processingStats && (
+        {/* Upload Progress */}
+        {uploadProgress && (
           <div className="mt-3 p-3 bg-muted/50 rounded-lg border border-border">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2">
-                <Loader2 className="h-4 w-4 animate-spin text-violet-600" />
-                <span className="text-sm font-medium">
-                  Procesando con IA... Lote {processingStats.currentBatch} de {processingStats.totalBatches}
+            <div className="flex items-center gap-2">
+              {isUploading ? (
+                <Loader2 className="h-4 w-4 animate-spin text-primary" />
+              ) : (
+                <CheckCircle2 className="h-4 w-4 text-green-600" />
+              )}
+              <span className="text-sm font-medium">{uploadProgress.status}</span>
+              {uploadProgress.inserted !== undefined && (
+                <span className="text-sm text-muted-foreground">
+                  ({uploadProgress.inserted} de {uploadProgress.total} filas importadas)
                 </span>
+              )}
+            </div>
+            {isUploading && <Progress value={50} className="h-1.5 mt-2" />}
+          </div>
+        )}
+
+        {/* AI Progress */}
+        {aiProgress && (
+          <div className="mt-3 p-3 bg-violet-50 rounded-lg border border-violet-200">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                {isGeneratingAi ? (
+                  <Loader2 className="h-4 w-4 animate-spin text-violet-600" />
+                ) : (
+                  <CheckCircle2 className="h-4 w-4 text-green-600" />
+                )}
+                <span className="text-sm font-medium text-violet-700">{aiProgress}</span>
               </div>
-              <span className="text-sm text-muted-foreground">
-                {processingStats.processed} / {processingStats.total} productos
-              </span>
+              <div className="flex items-center gap-3">
+                {aiJobProgress && aiJobProgress.total > 0 && (
+                  <div className="flex items-center gap-3 text-xs text-violet-600">
+                    {aiJobProgress.successful > 0 && (
+                      <span className="text-green-600">{aiJobProgress.successful} exitosos</span>
+                    )}
+                    {aiJobProgress.failed > 0 && (
+                      <span className="text-red-600">{aiJobProgress.failed} fallidos</span>
+                    )}
+                    <span className="font-medium">
+                      {Math.round((aiJobProgress.processed / aiJobProgress.total) * 100)}%
+                    </span>
+                  </div>
+                )}
+                {isGeneratingAi && aiJobId && (
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={handleStopAiJob}
+                    className="h-7 px-3 text-xs gap-1.5"
+                  >
+                    <Square className="h-3 w-3 fill-current" />
+                    Detener
+                  </Button>
+                )}
+              </div>
             </div>
             <Progress
-              value={processingStats.total > 0 ? (processingStats.processed / processingStats.total) * 100 : 0}
-              className="h-2"
+              value={
+                aiJobProgress && aiJobProgress.total > 0
+                  ? (aiJobProgress.processed / aiJobProgress.total) * 100
+                  : isGeneratingAi ? 5 : 100
+              }
+              className="h-1.5 mt-2"
             />
-            <div className="flex items-center justify-between mt-2 text-xs text-muted-foreground">
-              <div className="flex items-center gap-3">
-                <span className="text-green-600">Exitosos: {processingStats.success}</span>
-                {(processingStats.withImage ?? 0) > 0 && (
-                  <span className="text-cyan-600 flex items-center gap-1">
-                    <Image className="h-3 w-3" />
-                    {processingStats.withImage}
-                  </span>
-                )}
-                {(processingStats.skippedNoImage ?? 0) > 0 && (
-                  <span className="text-amber-600 flex items-center gap-1">
-                    <ImageOff className="h-3 w-3" />
-                    Sin imagen: {processingStats.skippedNoImage}
-                  </span>
-                )}
-                {(processingStats.skippedByProvider ?? 0) > 0 && (
-                  <span className="text-orange-500 flex items-center gap-1">
-                    <Ban className="h-3 w-3" />
-                    Omitidos (proveedor): {processingStats.skippedByProvider}
-                  </span>
-                )}
-                {(processingStats.skipped ?? 0) > 0 && (
-                  <span className="text-gray-500">Omitidos: {processingStats.skipped}</span>
-                )}
-              </div>
-              <div className="flex items-center gap-3">
-                {processingStats.errors > 0 && (
-                  <span className="text-red-600">Errores: {processingStats.errors}</span>
-                )}
-                {processingStats.lastError && (
-                  <span className="text-red-500 truncate max-w-[200px]" title={processingStats.lastError}>
-                    Ultimo error: {processingStats.lastError}
-                  </span>
-                )}
-              </div>
-            </div>
           </div>
         )}
       </header>
 
-      {/* Prompt Config Dialog */}
-      <PromptConfig
-        open={isPromptConfigOpen}
-        onOpenChange={setIsPromptConfigOpen}
-        onSave={() => {
-          toast.success("Prompt guardado exitosamente");
-        }}
-      />
-
-      {/* Description Variants Modal */}
-      {currentVariantsProduct && (
-        <DescriptionVariantsModal
-          open={isVariantsModalOpen}
-          onOpenChange={setIsVariantsModalOpen}
-          originalDescription={currentVariantsProduct.description}
-          product={currentVariantsProduct.productData}
-          onSave={(selectedVariant) => {
-            handleCellUpdate(
-              currentVariantsProduct.primaryKey,
-              "descripcion_eshop",
-              selectedVariant
-            );
-          }}
-        />
-      )}
-
-      {/* AI Review Dialog */}
-      <AIReviewDialog
-        open={isReviewDialogOpen}
-        onOpenChange={setIsReviewDialogOpen}
-        pendingChanges={pendingChanges}
-        skippedProducts={skippedProducts}
-        skippedNoImageProducts={skippedNoImageProducts}
-        onConfirm={handleConfirmChanges}
-        onDiscard={handleDiscardChanges}
-        onSaveDescriptions={handleSaveDescriptions}
-      />
-
-      {/* Full-screen Table */}
+      {/* Main Table */}
       <main className="flex-1 overflow-auto">
-        {tableData && tableData.columns.length > 0 ? (
+        {totalRows > 0 ? (
           <div className="min-w-full">
             <table className="w-full border-collapse text-sm">
               <thead className="sticky top-0 bg-muted z-10">
                 <tr>
-                  {orderedColumns.map((col) => {
-                    const displayName = getColumnDisplayName(col.name);
-                    const isCurrentSort = sortColumn === col.name;
-                    const isDescriptionEshop = col.name === "descripcion_eshop";
+                  <th className="border-b border-border px-3 py-3 text-center w-10">
+                    <Checkbox
+                      checked={paginatedRows.length > 0 && paginatedRows.every((r) => selectedRows.has(r.id as number))}
+                      onCheckedChange={toggleSelectPage}
+                    />
+                  </th>
+                  {visibleColumns.map((colName) => {
+                    const displayName = getDisplayName(colName);
+                    const isCurrentSort = sortColumn === colName;
 
                     return (
                       <th
-                        key={col.name}
-                        className={`border-b border-border px-4 py-3 text-left font-medium text-foreground whitespace-nowrap cursor-pointer hover:bg-muted/80 transition-colors select-none ${
-                          isDescriptionEshop ? "min-w-[500px] max-w-[800px]" : ""
-                        }`}
-                        onClick={() => handleSort(col.name)}
+                        key={colName}
+                        className="border-b border-border px-4 py-3 text-left font-medium text-foreground whitespace-nowrap cursor-pointer hover:bg-muted/80 transition-colors select-none"
+                        onClick={() => handleSort(colName)}
                       >
                         <div className="flex items-center gap-2">
-                          <span>{displayName}</span>
-                          <span className="text-muted-foreground">
+                          <span className="truncate max-w-[180px]">{displayName}</span>
+                          <span className="text-muted-foreground shrink-0">
                             {isCurrentSort ? (
                               sortDirection === "asc" ? (
                                 <ArrowUp className="h-4 w-4" />
@@ -1034,77 +1382,179 @@ export default function Home() {
                       </th>
                     );
                   })}
-                  <th className="border-b border-border px-4 py-3 text-left font-medium w-20">
-                    Acciones
-                  </th>
+                  {activeView === "maestra" && (
+                    <th className="border-b border-border px-4 py-3 text-left font-medium w-20">
+                      Acciones
+                    </th>
+                  )}
                 </tr>
               </thead>
               <tbody>
-                {sortedRows.map((row, rowIndex) => {
-                  const primaryKeyValue = tableData.primaryKey
-                    ? row[tableData.primaryKey]
-                    : rowIndex;
+                {paginatedRows.map((row) => {
+                  const rowId = row.id as number;
+                  const isSelected = selectedRows.has(rowId);
 
                   return (
                     <tr
-                      key={rowIndex}
-                      className="hover:bg-muted/50 transition-colors"
+                      key={rowId}
+                      className={`hover:bg-muted/50 transition-colors ${isSelected ? "bg-violet-50" : ""}`}
                     >
-                      {orderedColumns.map((col) => (
-                        <td
-                          key={col.name}
-                          className={`border-b border-border px-4 py-2 ${
-                            col.name === "descripcion_eshop" ? "min-w-[500px] max-w-[800px]" : ""
-                          }`}
-                        >
-                          {col.name === "descripcion_eshop" ? (
-                            <EditableDescriptionCell
-                              value={row[col.name]}
-                              onSave={(newValue) =>
-                                handleCellUpdate(primaryKeyValue as string | number, col.name, newValue)
-                              }
-                              onOpenVariantsModal={() =>
-                                handleOpenVariantsModal(String(row[col.name] || ""), primaryKeyValue as string | number, row)
-                              }
-                            />
-                          ) : (
-                            <EditableCell
-                              value={row[col.name]}
-                              onSave={(newValue) =>
-                                handleCellUpdate(primaryKeyValue as string | number, col.name, newValue)
-                              }
-                            />
-                          )}
-                        </td>
-                      ))}
-                      <td className="border-b border-border px-4 py-2">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="text-destructive hover:text-destructive hover:bg-destructive/10"
-                          onClick={() => handleDeleteRow(primaryKeyValue as string | number)}
-                        >
-                          Eliminar
-                        </Button>
+                      <td className="border-b border-border px-3 py-2 text-center">
+                        <Checkbox
+                          checked={isSelected}
+                          onCheckedChange={() => toggleRowSelection(rowId)}
+                        />
                       </td>
+                      {visibleColumns.map((colName) => {
+                        const isLongText = colName === "short_description" || colName === "long_description" || colName === "meta_description";
+                        return (
+                          <td
+                            key={colName}
+                            className={`border-b border-border px-4 py-2 ${isLongText ? "min-w-[300px]" : ""}`}
+                          >
+                            <EditableCell
+                              value={row[colName] as string | number | null}
+                              onSave={(newValue) => handleCellUpdate(rowId, colName, newValue)}
+                              isLongText={isLongText}
+                            />
+                          </td>
+                        );
+                      })}
+                      {activeView === "maestra" && (
+                        <td className="border-b border-border px-4 py-2">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                            onClick={() => handleDeleteRow(rowId)}
+                          >
+                            Eliminar
+                          </Button>
+                        </td>
+                      )}
                     </tr>
                   );
                 })}
               </tbody>
             </table>
-
-            {tableData.rows.length === 0 && (
-              <div className="flex items-center justify-center h-64 text-muted-foreground">
-                No hay datos en la tabla. Importá un archivo Excel (.xlsx) para agregar productos.
-              </div>
-            )}
           </div>
         ) : (
-          <div className="flex items-center justify-center h-full text-muted-foreground">
-            No se encontraron columnas en la tabla.
+          /* Empty state with upload prompt */
+          <div className="flex items-center justify-center h-full">
+            <div className="flex flex-col items-center gap-6 max-w-md text-center px-4">
+              <div className="w-20 h-20 rounded-2xl bg-primary/10 flex items-center justify-center">
+                <FileSpreadsheet className="h-10 w-10 text-primary" />
+              </div>
+              <div>
+                <h2 className="text-xl font-semibold mb-2">No hay datos cargados</h2>
+                <p className="text-muted-foreground text-sm">
+                  Importa un archivo Excel con formato Maestra (.xlsx) para cargar los datos de productos en la base de datos.
+                </p>
+              </div>
+              <div className="flex gap-3">
+                <Button
+                  onClick={handleImportClick}
+                  disabled={isUploading}
+                  className="bg-gradient-to-r from-primary to-primary/80"
+                >
+                  {isUploading ? (
+                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                  ) : (
+                    <Upload className="h-4 w-4 mr-2" />
+                  )}
+                  Importar Maestra.xlsx
+                </Button>
+              </div>
+            </div>
           </div>
         )}
       </main>
+
+      {/* Pagination + Selection Footer */}
+      {totalRows > 0 && (
+        <footer className="shrink-0 border-t border-border bg-background px-4 py-2">
+          <div className="flex items-center justify-between">
+            {/* Selection info */}
+            <div className="flex items-center gap-3 text-sm text-muted-foreground">
+              {selectedRows.size > 0 ? (
+                <>
+                  <span className="font-medium text-foreground">
+                    {selectedRows.size} de {sortedRows.length} seleccionados
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setSelectedRows(new Set())}
+                    className="h-7 text-xs px-2"
+                  >
+                    <X className="h-3 w-3 mr-1" />
+                    Deseleccionar
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={toggleSelectAll}
+                    className="h-7 text-xs px-2"
+                  >
+                    Seleccionar todos ({sortedRows.length})
+                  </Button>
+                </>
+              ) : (
+                <span>
+                  {sortedRows.length !== totalRows
+                    ? `${sortedRows.length} de ${totalRows} registros`
+                    : `${totalRows} registros`}
+                </span>
+              )}
+            </div>
+
+            {/* Pagination controls */}
+            {totalPages > 1 && (
+              <div className="flex items-center gap-1.5">
+                <span className="text-sm text-muted-foreground mr-2">
+                  Pagina {safePage} de {totalPages}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 w-8 p-0"
+                  onClick={() => setCurrentPage(1)}
+                  disabled={safePage <= 1}
+                >
+                  <ChevronsLeft className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 w-8 p-0"
+                  onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                  disabled={safePage <= 1}
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 w-8 p-0"
+                  onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={safePage >= totalPages}
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 w-8 p-0"
+                  onClick={() => setCurrentPage(totalPages)}
+                  disabled={safePage >= totalPages}
+                >
+                  <ChevronsRight className="h-4 w-4" />
+                </Button>
+              </div>
+            )}
+          </div>
+        </footer>
+      )}
     </div>
   );
 }
@@ -1113,9 +1563,11 @@ export default function Home() {
 function EditableCell({
   value,
   onSave,
+  isLongText = false,
 }: {
   value: string | number | boolean | null;
   onSave: (value: string) => void;
+  isLongText?: boolean;
 }) {
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(String(value ?? ""));
@@ -1133,18 +1585,50 @@ function EditableCell({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter") {
-      setIsEditing(false);
-      if (editValue !== String(value ?? "")) {
-        onSave(editValue);
+    if (isLongText) {
+      if (e.key === "Escape") {
+        setIsEditing(false);
+        setEditValue(String(value ?? ""));
       }
-    } else if (e.key === "Escape") {
-      setIsEditing(false);
-      setEditValue(String(value ?? ""));
+      // Enter creates newlines in textarea, Ctrl+Enter saves
+      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+        setIsEditing(false);
+        if (editValue !== String(value ?? "")) {
+          onSave(editValue);
+        }
+      }
+    } else {
+      if (e.key === "Enter") {
+        setIsEditing(false);
+        if (editValue !== String(value ?? "")) {
+          onSave(editValue);
+        }
+      } else if (e.key === "Escape") {
+        setIsEditing(false);
+        setEditValue(String(value ?? ""));
+      }
     }
   };
 
   if (isEditing) {
+    if (isLongText) {
+      return (
+        <div className="relative">
+          <textarea
+            value={editValue}
+            onChange={(e) => setEditValue(e.target.value)}
+            onBlur={handleBlur}
+            onKeyDown={handleKeyDown}
+            autoFocus
+            rows={5}
+            className="w-full min-w-[280px] px-2 py-1 border border-primary rounded bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 resize-y"
+          />
+          <span className="text-[10px] text-muted-foreground absolute bottom-2 right-2">
+            Ctrl+Enter para guardar
+          </span>
+        </div>
+      );
+    }
     return (
       <input
         type="text"
@@ -1158,107 +1642,35 @@ function EditableCell({
     );
   }
 
+  if (isLongText) {
+    const strVal = String(value ?? "");
+    const preview = strVal.length > 120 ? strVal.slice(0, 120) + "..." : strVal;
+    return (
+      <div
+        onDoubleClick={handleDoubleClick}
+        className="cursor-pointer min-h-6 max-w-[350px] text-xs leading-relaxed"
+        title={strVal}
+      >
+        {value === null || value === undefined || value === "" ? (
+          <span className="text-muted-foreground italic">-</span>
+        ) : (
+          preview
+        )}
+      </div>
+    );
+  }
+
   return (
     <div
       onDoubleClick={handleDoubleClick}
       className="cursor-pointer min-h-6 truncate max-w-[300px]"
       title={String(value ?? "")}
     >
-      {value === null ? (
-        <span className="text-muted-foreground italic">null</span>
+      {value === null || value === undefined || value === "" ? (
+        <span className="text-muted-foreground italic">-</span>
       ) : (
         String(value)
       )}
     </div>
   );
 }
-
-// Special editable cell for description eshop with better formatting
-function EditableDescriptionCell({
-  value,
-  onSave,
-  onOpenVariantsModal,
-}: {
-  value: string | number | boolean | null;
-  onSave: (value: string) => void;
-  onOpenVariantsModal: () => void;
-}) {
-  const [isEditing, setIsEditing] = useState(false);
-  const [editValue, setEditValue] = useState(String(value ?? ""));
-
-  const handleDoubleClick = () => {
-    setIsEditing(true);
-    setEditValue(String(value ?? ""));
-  };
-
-  const handleBlur = () => {
-    setIsEditing(false);
-    if (editValue !== String(value ?? "")) {
-      onSave(editValue);
-    }
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-      // Ctrl/Cmd + Enter to save
-      setIsEditing(false);
-      if (editValue !== String(value ?? "")) {
-        onSave(editValue);
-      }
-    } else if (e.key === "Escape") {
-      setIsEditing(false);
-      setEditValue(String(value ?? ""));
-    }
-  };
-
-  if (isEditing) {
-    return (
-      <textarea
-        value={editValue}
-        onChange={(e) => setEditValue(e.target.value)}
-        onBlur={handleBlur}
-        onKeyDown={handleKeyDown}
-        autoFocus
-        rows={6}
-        className="w-full px-3 py-2 border border-primary rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 resize-y font-sans text-sm leading-relaxed"
-        placeholder="Escribí la descripción aquí..."
-      />
-    );
-  }
-
-  const textValue = value === null ? "" : String(value);
-  const isEmpty = !textValue || textValue.trim() === "";
-
-  return (
-    <div
-      onDoubleClick={handleDoubleClick}
-      className="group relative cursor-pointer min-h-[80px] p-2 rounded-md hover:bg-muted/50 transition-colors"
-      title="Doble clic para editar"
-    >
-      {/* AI Button - appears on hover */}
-      <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-10">
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={(e) => {
-            e.stopPropagation();
-            onOpenVariantsModal();
-          }}
-          className="h-7 w-7 p-0 bg-violet-600 hover:bg-violet-700 text-white hover:text-white cursor-pointer border-violet-600 hover:border-violet-700 shadow-sm"
-          title="Generar variantes con IA"
-        >
-          <Sparkles className="h-3 w-3" />
-        </Button>
-      </div>
-
-      {isEmpty ? (
-        <span className="text-muted-foreground italic text-sm">Sin descripción</span>
-      ) : (
-        <div className="text-sm leading-relaxed whitespace-normal break-words text-foreground pr-10">
-          {textValue.replace(/\n+/g, ' ').trim()}
-        </div>
-      )}
-    </div>
-  );
-}
-

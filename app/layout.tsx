@@ -9,8 +9,8 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "EspacioMagma | CSV Data Manager",
-  description: "Import, edit, and export your CSV data with ease",
+  title: "Cannon Home | Maestra de Productos",
+  description: "Gestión de datos maestros de productos - Cannon Home",
 };
 
 export default function RootLayout({

@@ -32,6 +32,9 @@ Thumbs.db
 .git
 .gitignore
 
+# Data
+data
+
 # Docker
 Dockerfile*
 docker-compose*

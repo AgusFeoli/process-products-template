@@ -10,8 +10,8 @@ export async function POST(request: NextRequest) {
     const { username, password } = body;
 
     // Get credentials from environment variables
-    const correctUsername = process.env.AUTH_USERNAME || "espacio-magma";
-    const correctPassword = process.env.AUTH_PASSWORD || "espacio-magma-2025";
+    const correctUsername = process.env.AUTH_USERNAME || "cannon";
+    const correctPassword = process.env.AUTH_PASSWORD || "cannon-2025";
 
     // Validate credentials
     if (username === correctUsername && password === correctPassword) {
