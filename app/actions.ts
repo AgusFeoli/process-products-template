@@ -1,46 +1,59 @@
 "use server";
 
 import {
-  initializeDatabase,
-  getTableData as getTableDataFromDb,
-  insertRows,
-  updateCell as updateCellFromDb,
-  deleteRow as deleteRowFromDb,
-  deleteAllRows as deleteAllRowsFromDb,
-  type TableData,
-  type TableColumn,
-} from "@/lib/db";
-import { CSV_COLUMN_MAP, XLSX_EXPORT_ORDER } from "@/lib/column-mapping";
-import * as XLSX from "xlsx";
+  initializeMaestraDatabase,
+  getMaestraProducts,
+  getMaestraProductsByIds,
+  getMaestraCount,
+  updateMaestraCell,
+  deleteMaestraRow,
+  deleteAllMaestraRows,
+  syncMagentoFromMaestra,
+  getMagentoProducts,
+  getMagentoProductsByIds,
+  updateMagentoCell,
+  getKeywordCount,
+  getSystemPrompt,
+  saveSystemPrompt,
+  getDefaultSystemPrompt,
+  type MaestraProduct,
+  type MagentoProduct,
+  type SeoKeyword,
+  MAESTRA_COLUMN_MAP,
+  MAESTRA_EXPORT_ORDER,
+} from "@/lib/maestra-db";
+import {
+  MAGENTO_CSV_COLUMNS,
+  MAGENTO_FIXED_VALUES,
+  MAGENTO_MAESTRA_MAPPED_FIELDS,
+} from "@/lib/magento-columns";
+export type { MaestraProduct, MagentoProduct, SeoKeyword };
 
-// Re-export types for components
-export type { TableData, TableColumn };
-
-// Check database connection status
+// Check database connection
 export async function checkConnection(): Promise<{
   connected: boolean;
   tableExists: boolean;
-  tableName: string;
 }> {
   try {
-    return await initializeDatabase();
+    return await initializeMaestraDatabase();
   } catch (error) {
     console.error("Connection check error:", error);
-    return { connected: false, tableExists: false, tableName: "products" };
+    return { connected: false, tableExists: false };
   }
 }
 
-// Fetch table data from the existing PostgreSQL table
-export async function fetchTableData(): Promise<{
+// Fetch all maestra products
+export async function fetchMaestraData(): Promise<{
   success: boolean;
-  data?: TableData;
+  data?: MaestraProduct[];
+  count?: number;
   error?: string;
 }> {
   try {
-    const data = await getTableDataFromDb();
-    return { success: true, data };
+    const data = await getMaestraProducts();
+    return { success: true, data, count: data.length };
   } catch (error) {
-    console.error("Fetch table data error:", error);
+    console.error("Fetch maestra data error:", error);
     return {
       success: false,
       error: error instanceof Error ? error.message : "Failed to fetch data",
@@ -48,156 +61,23 @@ export async function fetchTableData(): Promise<{
   }
 }
 
-// Import XLSX/CSV and append to existing table
-export async function importCsv(
-  formData: FormData
-): Promise<{
-  success: boolean;
-  inserted?: number;
-  errors?: string[];
-  error?: string;
-}> {
+// Get row count
+export async function fetchMaestraCount(): Promise<number> {
   try {
-    const file = formData.get("file") as File;
-    if (!file) {
-      return { success: false, error: "No file provided" };
-    }
-
-    const fileName = file.name.toLowerCase();
-    let rows: Record<string, string>[] = [];
-
-    if (fileName.endsWith(".xlsx") || fileName.endsWith(".xls")) {
-      // Parse Excel file
-      const arrayBuffer = await file.arrayBuffer();
-      const uint8 = new Uint8Array(arrayBuffer);
-      const workbook = XLSX.read(uint8, { type: "array" });
-      const firstSheetName = workbook.SheetNames[0];
-      const worksheet = workbook.Sheets[firstSheetName];
-      const data = XLSX.utils.sheet_to_json<(string | number | null)[]>(worksheet, {
-        header: 1,
-        defval: null,
-      });
-
-      if (data.length < 2) {
-        return {
-          success: false,
-          error: "El archivo debe tener encabezados y al menos una fila de datos",
-        };
-      }
-
-      // Parse headers from first row
-      const excelHeaders = (data[0] as (string | number | null)[]).map((h) => String(h ?? "").trim());
-
-      // Map Excel headers to DB column names
-      const dbHeaders = excelHeaders.map((header) => {
-        return CSV_COLUMN_MAP[header] || header.toLowerCase().replace(/\s+/g, "_");
-      });
-
-      // Parse data rows
-      for (let i = 1; i < data.length; i++) {
-        const values = data[i] as (string | number | null)[];
-        if (!values || values.length === 0 || values.every((v) => v === null || v === undefined || v === "")) {
-          continue; // Skip empty rows
-        }
-        const row: Record<string, string> = {};
-        for (let j = 0; j < dbHeaders.length; j++) {
-          const val = values[j];
-          row[dbHeaders[j]] = val !== null && val !== undefined ? String(val) : "";
-        }
-        rows.push(row);
-      }
-    } else {
-      // Fallback: Parse as CSV
-      const content = await file.text();
-      const lines = content.split(/\r?\n/).filter((line) => line.trim());
-
-      if (lines.length < 2) {
-        return {
-          success: false,
-          error: "CSV file must have headers and at least one data row",
-        };
-      }
-
-      const csvHeaders = parseCsvLine(lines[0]);
-      const dbHeaders = csvHeaders.map((header) => {
-        const trimmed = header.trim();
-        return CSV_COLUMN_MAP[trimmed] || trimmed.toLowerCase().replace(/\s+/g, "_");
-      });
-
-      for (let i = 1; i < lines.length; i++) {
-        const values = parseCsvLine(lines[i]);
-        const row: Record<string, string> = {};
-        for (let j = 0; j < dbHeaders.length; j++) {
-          row[dbHeaders[j]] = values[j] || "";
-        }
-        rows.push(row);
-      }
-    }
-
-    if (rows.length === 0) {
-      return { success: false, error: "No se encontraron filas de datos en el archivo" };
-    }
-
-    // Insert rows into database
-    const result = await insertRows(rows);
-
-    return {
-      success: true,
-      inserted: result.inserted,
-      errors: result.errors.length > 0 ? result.errors : undefined,
-    };
-  } catch (error) {
-    console.error("Import error:", error);
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : "Failed to import file",
-    };
+    return await getMaestraCount();
+  } catch {
+    return 0;
   }
 }
 
-// Helper function to parse CSV line handling quoted values
-function parseCsvLine(line: string): string[] {
-  const result: string[] = [];
-  let current = "";
-  let inQuotes = false;
-
-  for (let i = 0; i < line.length; i++) {
-    const char = line[i];
-    const nextChar = line[i + 1];
-
-    if (inQuotes) {
-      if (char === '"' && nextChar === '"') {
-        current += '"';
-        i++; // Skip next quote
-      } else if (char === '"') {
-        inQuotes = false;
-      } else {
-        current += char;
-      }
-    } else {
-      if (char === '"') {
-        inQuotes = true;
-      } else if (char === ",") {
-        result.push(current.trim());
-        current = "";
-      } else {
-        current += char;
-      }
-    }
-  }
-
-  result.push(current.trim());
-  return result;
-}
-
-// Update a cell value
+// Update a cell
 export async function updateCell(
-  primaryKeyValue: string | number,
+  id: number,
   columnName: string,
   value: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    await updateCellFromDb(primaryKeyValue, columnName, value);
+    await updateMaestraCell(id, columnName, value);
     return { success: true };
   } catch (error) {
     console.error("Update cell error:", error);
@@ -210,10 +90,10 @@ export async function updateCell(
 
 // Delete a row
 export async function deleteRow(
-  primaryKeyValue: string | number
+  id: number
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    await deleteRowFromDb(primaryKeyValue);
+    await deleteMaestraRow(id);
     return { success: true };
   } catch (error) {
     console.error("Delete row error:", error);
@@ -225,9 +105,13 @@ export async function deleteRow(
 }
 
 // Delete all rows
-export async function deleteAllRows(): Promise<{ success: boolean; deletedCount?: number; error?: string }> {
+export async function deleteAllRows(): Promise<{
+  success: boolean;
+  deletedCount?: number;
+  error?: string;
+}> {
   try {
-    const result = await deleteAllRowsFromDb();
+    const result = await deleteAllMaestraRows();
     return { success: true, deletedCount: result.deletedCount };
   } catch (error) {
     console.error("Delete all rows error:", error);
@@ -238,82 +122,228 @@ export async function deleteAllRows(): Promise<{ success: boolean; deletedCount?
   }
 }
 
-// Export table data as XLSX
-export async function exportXlsx(): Promise<{
-  success: boolean;
-  base64?: string;
-  filename?: string;
-  error?: string;
-}> {
-  try {
-    const data = await getTableDataFromDb();
-
-    // Map DB column names to the fixed export order
-    const dbColumnsInOrder = XLSX_EXPORT_ORDER.map(
-      (xlsxHeader) => CSV_COLUMN_MAP[xlsxHeader]
-    );
-
-    // Build rows for XLSX
-    const xlsxRows: (string | number | boolean | null)[][] = [];
-
-    for (const row of data.rows) {
-      const values = dbColumnsInOrder.map((dbCol) => {
-        const value = row[dbCol];
-        if (value === null || value === undefined) return null;
-        return value;
-      });
-      xlsxRows.push(values);
-    }
-
-    // Create workbook
-    const wb = XLSX.utils.book_new();
-    const wsData = [XLSX_EXPORT_ORDER, ...xlsxRows];
-    const ws = XLSX.utils.aoa_to_sheet(wsData);
-
-    // Set column widths for better readability
-    const colWidths = XLSX_EXPORT_ORDER.map((header) => {
-      if (header === "Descripción e-Shop") return { wch: 80 };
-      if (header === "Descripción" || header === "Composición") return { wch: 40 };
-      if (header === "Modelo") return { wch: 20 };
-      if (header === "Proveedor") return { wch: 12 };
-      return { wch: 15 };
-    });
-    ws["!cols"] = colWidths;
-
-    XLSX.utils.book_append_sheet(wb, ws, "Hoja1");
-
-    // Write to buffer and convert to base64
-    const buffer = XLSX.write(wb, { type: "base64", bookType: "xlsx" });
-
-    return {
-      success: true,
-      base64: buffer,
-      filename: `${data.tableName}-export.xlsx`,
-    };
-  } catch (error) {
-    console.error("Export error:", error);
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : "Failed to export XLSX",
-    };
-  }
-}
-
-// Keep old exportCsv for backward compatibility (now exports XLSX)
-export async function exportCsv(): Promise<{
+// Export as CSV
+export async function exportCsv(productIds?: number[]): Promise<{
   success: boolean;
   csv?: string;
   filename?: string;
   error?: string;
 }> {
-  // Redirect to XLSX export
-  const result = await exportXlsx();
-  if (result.success && result.base64) {
+  try {
+    const data = productIds && productIds.length > 0
+      ? await getMaestraProductsByIds(productIds)
+      : await getMaestraProducts();
+
+    // Map DB columns to export order
+    const dbColumnsInOrder = MAESTRA_EXPORT_ORDER.map(
+      (xlsxHeader) => MAESTRA_COLUMN_MAP[xlsxHeader]
+    );
+
+    // Escape a CSV field: wrap in quotes if it contains comma, quote, or newline
+    const escapeCsvField = (val: string | number | null): string => {
+      if (val === null || val === undefined) return "";
+      const str = String(val);
+      if (str.includes(",") || str.includes('"') || str.includes("\n") || str.includes("\r")) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    };
+
+    // Build CSV string
+    const headerLine = MAESTRA_EXPORT_ORDER.map(escapeCsvField).join(",");
+    const dataLines = data.map((row) => {
+      return dbColumnsInOrder
+        .map((dbCol) => {
+          const value = (row as unknown as Record<string, unknown>)[dbCol];
+          return escapeCsvField(value as string | number | null);
+        })
+        .join(",");
+    });
+
+    const csv = [headerLine, ...dataLines].join("\n");
+
     return {
       success: true,
-      csv: result.base64,
-      filename: result.filename,
+      csv,
+      filename: `maestra-export-${new Date().toISOString().slice(0, 10)}.csv`,
+    };
+  } catch (error) {
+    console.error("Export error:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to export CSV",
     };
   }
-  return { success: false, error: result.error };
+}
+
+// ============================================
+// Magento actions
+// ============================================
+
+// Sync magento products from maestra and fetch them
+export async function fetchMagentoData(): Promise<{
+  success: boolean;
+  data?: MagentoProduct[];
+  count?: number;
+  error?: string;
+}> {
+  try {
+    await syncMagentoFromMaestra();
+    const data = await getMagentoProducts();
+    return { success: true, data, count: data.length };
+  } catch (error) {
+    console.error("Fetch magento data error:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to fetch magento data",
+    };
+  }
+}
+
+// Update a magento cell
+export async function updateMagentoField(
+  id: number,
+  columnName: string,
+  value: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    await updateMagentoCell(id, columnName, value);
+    return { success: true };
+  } catch (error) {
+    console.error("Update magento cell error:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to update magento cell",
+    };
+  }
+}
+
+// Export Magento CSV (semicolon-separated)
+export async function exportMagentoCsv(productIds?: number[]): Promise<{
+  success: boolean;
+  csv?: string;
+  filename?: string;
+  error?: string;
+}> {
+  try {
+    await syncMagentoFromMaestra();
+    const magentoData = productIds && productIds.length > 0
+      ? await getMagentoProductsByIds(productIds)
+      : await getMagentoProducts();
+    const maestraData = await getMaestraProducts();
+    const maestraMap = new Map(maestraData.map((p) => [p.id, p]));
+
+    // Escape a CSV field for semicolon-separated format
+    const escapeCsvField = (val: string | number | null): string => {
+      if (val === null || val === undefined) return "";
+      const str = String(val);
+      if (str.includes(";") || str.includes('"') || str.includes("\n") || str.includes("\r")) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    };
+
+    // Header line
+    const headerLine = MAGENTO_CSV_COLUMNS.join(";");
+
+    // Data lines
+    const dataLines = magentoData.map((mg) => {
+      const maestra = maestraMap.get(mg.maestra_id);
+      const row: Record<string, string | number | null> = {};
+
+      for (const col of MAGENTO_CSV_COLUMNS) {
+        // Fixed values
+        if (col in MAGENTO_FIXED_VALUES) {
+          row[col] = MAGENTO_FIXED_VALUES[col];
+        }
+        // Mapped from maestra
+        else if (col in MAGENTO_MAESTRA_MAPPED_FIELDS && maestra) {
+          const maestraCol = MAGENTO_MAESTRA_MAPPED_FIELDS[col];
+          row[col] = (maestra as unknown as Record<string, unknown>)[maestraCol] as string | number | null;
+        }
+        // From magento table (AI-generated or user-edited)
+        else {
+          row[col] = ((mg as unknown as Record<string, unknown>)[col] as string | number | null) ?? null;
+        }
+      }
+
+      return MAGENTO_CSV_COLUMNS.map((col) => escapeCsvField(row[col] ?? null)).join(";");
+    });
+
+    const csv = [headerLine, ...dataLines].join("\n");
+
+    return {
+      success: true,
+      csv,
+      filename: `magento-export-${new Date().toISOString().slice(0, 10)}.csv`,
+    };
+  } catch (error) {
+    console.error("Export magento error:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to export Magento CSV",
+    };
+  }
+}
+
+// ============================================
+// Keywords actions
+// ============================================
+
+export async function fetchKeywordStatus(): Promise<{
+  loaded: boolean;
+  count: number;
+}> {
+  try {
+    const count = await getKeywordCount();
+    return { loaded: count > 0, count };
+  } catch {
+    return { loaded: false, count: 0 };
+  }
+}
+
+// ============================================
+// System Prompt actions
+// ============================================
+
+export async function fetchSystemPrompt(): Promise<string> {
+  try {
+    return await getSystemPrompt();
+  } catch {
+    return getDefaultSystemPrompt();
+  }
+}
+
+export async function updateSystemPrompt(
+  prompt: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    await saveSystemPrompt(prompt);
+    return { success: true };
+  } catch (error) {
+    console.error("Update system prompt error:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to save prompt",
+    };
+  }
+}
+
+export async function resetSystemPrompt(): Promise<{
+  success: boolean;
+  prompt: string;
+  error?: string;
+}> {
+  try {
+    const defaultPrompt = getDefaultSystemPrompt();
+    await saveSystemPrompt(defaultPrompt);
+    return { success: true, prompt: defaultPrompt };
+  } catch (error) {
+    console.error("Reset system prompt error:", error);
+    return {
+      success: false,
+      prompt: getDefaultSystemPrompt(),
+      error: error instanceof Error ? error.message : "Failed to reset prompt",
+    };
+  }
 }

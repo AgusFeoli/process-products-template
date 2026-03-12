@@ -53,11 +53,13 @@ export function Login({ onLoginSuccess }: LoginProps) {
           {/* Header */}
           <div className="text-center space-y-2">
             <div className="flex justify-center mb-4">
-              <div className="h-16 w-16 rounded-full bg-primary/10 flex items-center justify-center">
-                <Lock className="h-8 w-8 text-primary" />
-              </div>
+              <img
+                src="/cannon-logo.png"
+                alt="Cannon Home"
+                className="h-12 object-contain"
+              />
             </div>
-            <h1 className="text-2xl font-bold text-foreground">Iniciar Sesión</h1>
+            <h1 className="text-2xl font-bold text-foreground">Maestra de Productos</h1>
             <p className="text-sm text-muted-foreground">
               Ingresa tus credenciales para acceder
             </p>
