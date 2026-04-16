@@ -14,6 +14,12 @@ import {
   cleanupOldAiJobs,
   getAiJob,
 } from "@/lib/maestra-db";
+import {
+  BatchEngine,
+  defaultTransientClassifier,
+  type BatchProgress,
+} from "@/lib/batch-engine";
+import { setActiveEngine, deleteActiveEngine } from "@/lib/active-engines";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -33,17 +39,23 @@ const productOutputSchema = z.object({
   ),
 });
 
+/** Split an array into chunks of a given size */
+function chunkArray<T>(arr: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) {
+    chunks.push(arr.slice(i, i + size));
+  }
+  return chunks;
+}
+
 // Background processing function — runs after the response is sent
+// Uses BatchEngine for controlled parallelism with circuit breaker and adaptive throttling
 async function processAiJob(
   jobId: string,
   productsForAi: Array<Record<string, string | number>>,
   keywordContext: string,
   systemPrompt: string
 ) {
-  const BATCH_SIZE = 20;
-  let totalProcessed = 0;
-  let totalSuccessful = 0;
-  let totalFailed = 0;
   const errors: string[] = [];
 
   const client = createOpenAI({
@@ -54,33 +66,126 @@ async function processAiJob(
 
   const modelName = process.env.MODEL_NAME || "gpt-4o-mini";
 
+  // Split products into batches of 20 — each batch = one AI request
+  const PRODUCTS_PER_BATCH = 20;
+  const productBatches = chunkArray(productsForAi, PRODUCTS_PER_BATCH);
+
+  // Throttled progress updates — avoid flooding the DB
+  let lastProgressUpdate = 0;
+  const PROGRESS_UPDATE_INTERVAL_MS = 2_000; // Update DB at most every 2s
+  let lastCancellationCheck = 0;
+  const CANCELLATION_CHECK_INTERVAL_MS = 5_000; // Check cancellation every 5s
+
+  // Track product-level counts (BatchEngine counts batch-items, not individual products)
+  // Each batch-item contains PRODUCTS_PER_BATCH products (except possibly the last batch)
+  const totalProducts = productsForAi.length;
+  const totalBatchItems = productBatches.length;
+
+  // Configure BatchEngine:
+  // - Each "item" is a batch of 20 products (one AI request)
+  // - Max 5 concurrent batches running simultaneously
+  // - Circuit breaker opens after 5 consecutive failures
+  // - Adaptive throttling triggers at 5% error rate
+  // - Recovery after 10 consecutive successes
+  const engine = new BatchEngine<Record<string, string | number>[], number>(
+    {
+      // Since each "item" is already a batch of 20 products,
+      // we set batch size to 1 so BatchEngine processes each chunk individually
+      minBatchSize: 1,
+      maxBatchSize: productBatches.length,
+      // Max 5 concurrent AI requests (5 batches of 20 products)
+      maxConcurrentBatches: 5,
+      maxConcurrencyPerBatch: 5,
+      globalMaxConcurrency: 5,
+      // Circuit breaker: open after 5 consecutive failures, wait 30s before retry
+      circuitBreakerThreshold: 5,
+      circuitBreakerResetMs: 30_000,
+      // Retry transient errors up to 3 times with exponential backoff
+      maxRetries: 3,
+      retryBaseDelayMs: 2_000,
+      retryMaxDelayMs: 30_000,
+      // Adaptive throttling: reduce concurrency when error rate > 5%
+      throttleErrorThreshold: 0.05,
+      // Recover concurrency after 10 consecutive successful batches
+      throttleRecoveryStreak: 10,
+      // Small delay between batches to prevent burst pressure
+      interBatchDelayMs: 100,
+    },
+    defaultTransientClassifier,
+    // Progress callback — throttled DB updates
+    (progress: BatchProgress) => {
+      const now = Date.now();
+
+      // Check cancellation periodically (fire-and-forget)
+      if (now - lastCancellationCheck >= CANCELLATION_CHECK_INTERVAL_MS) {
+        lastCancellationCheck = now;
+        getAiJob(jobId)
+          .then((job) => {
+            if (job && job.status === "cancelled") {
+              engine.stop();
+            }
+          })
+          .catch(() => {});
+      }
+
+      // Throttle DB progress writes
+      if (now - lastProgressUpdate < PROGRESS_UPDATE_INTERVAL_MS) {
+        return;
+      }
+      lastProgressUpdate = now;
+
+      // Convert batch-item counts → product counts
+      // BatchEngine counts batch-items (each = ~20 products), not individual products.
+      // Scale proportionally: (completedBatchItems / totalBatchItems) * totalProducts
+      const completedBatchItems = progress.success + progress.errors;
+      const productsProcessed = Math.min(
+        totalProducts,
+        Math.round((completedBatchItems / totalBatchItems) * totalProducts)
+      );
+      const successRatio = progress.success / Math.max(1, completedBatchItems);
+      const productsSuccessful = completedBatchItems > 0
+        ? Math.round(productsProcessed * successRatio)
+        : 0;
+      const productsFailed = productsProcessed - productsSuccessful;
+
+      // Fire-and-forget DB update
+      updateAiJobProgress(jobId, {
+        processed_products: productsProcessed,
+        successful_products: productsSuccessful,
+        failed_products: productsFailed,
+        batch_metrics: JSON.stringify({
+          currentBatch: progress.currentBatch,
+          totalBatches: progress.totalBatches,
+          activeWorkers: progress.activeWorkers,
+          currentConcurrency: progress.currentConcurrency,
+          circuitState: progress.circuitState,
+          throughput: progress.throughput,
+          lastError: progress.lastError,
+        }),
+      }).catch(() => {});
+    }
+  );
+
+  // Store engine reference for cancellation support
+  setActiveEngine(jobId, engine);
+
   await updateAiJobProgress(jobId, { status: "processing" });
 
-  for (
-    let batchStart = 0;
-    batchStart < productsForAi.length;
-    batchStart += BATCH_SIZE
-  ) {
-    // Check if job was cancelled before processing next batch
-    try {
-      const currentJob = await getAiJob(jobId);
-      if (currentJob && currentJob.status === "cancelled") {
-        console.log(`AI job ${jobId} was cancelled. Stopping processing.`);
-        return; // Exit immediately — job already marked as cancelled in DB
-      }
-    } catch (checkErr) {
-      console.error("Failed to check job cancellation status:", checkErr);
-    }
+  try {
+    // Process all batches with controlled parallelism
+    const results = await engine.process(
+      productBatches,
+      async (batch, signal) => {
+        // Check abort signal
+        if (signal.aborted) {
+          throw new Error("Aborted");
+        }
 
-    const batch = productsForAi.slice(batchStart, batchStart + BATCH_SIZE);
-    const batchNumber = Math.floor(batchStart / BATCH_SIZE) + 1;
-
-    try {
-      const { object } = await generateObject({
-        model: client.chat(modelName),
-        schema: productOutputSchema,
-        system: systemPrompt,
-        prompt: `Genera los campos SEO para los siguientes productos de Cannon Home.
+        const { object } = await generateObject({
+          model: client.chat(modelName),
+          schema: productOutputSchema,
+          system: systemPrompt,
+          prompt: `Genera los campos SEO para los siguientes productos de Cannon Home.
 
 Para cada producto, genera todos los campos requeridos según las instrucciones del system prompt:
 - name, url_key, meta_title, meta_keywords, meta_description, short_description, long_description
@@ -90,59 +195,86 @@ ${keywordContext}
 ${JSON.stringify(batch, null, 2)}
 
 Devuelve un objeto JSON con un array "products". Cada elemento debe tener el mismo "id" del producto de entrada y todos los campos generados.`,
-      });
+        });
 
-      if (object.products && object.products.length > 0) {
-        const updated = await bulkUpdateMagentoAiFields(object.products);
-        totalSuccessful += updated;
+        if (object.products && object.products.length > 0) {
+          const updated = await bulkUpdateMagentoAiFields(object.products);
+          return updated;
+        }
+
+        return 0;
       }
-    } catch (batchError) {
-      const msg =
-        batchError instanceof Error
-          ? batchError.message
-          : "Unknown AI error";
-      errors.push(`Batch ${batchNumber}: ${msg}`);
-      totalFailed += batch.length;
-      console.error(`AI batch ${batchNumber} error:`, batchError);
-    }
+    );
 
-    totalProcessed += batch.length;
+    // Aggregate results
+    let totalProcessed = 0;
+    let totalSuccessful = 0;
+    let totalFailed = 0;
 
-    // Update progress in DB after each batch
+    results.forEach((result, index) => {
+      const batchProductCount = productBatches[index].length;
+      totalProcessed += batchProductCount;
+
+      if (result.success && result.result !== undefined) {
+        totalSuccessful += result.result;
+      } else {
+        totalFailed += batchProductCount;
+        if (result.error) {
+          errors.push(`Batch ${index + 1}: ${result.error.message}`);
+        }
+      }
+    });
+
+    // Check if job was cancelled before setting final status
     try {
-      await updateAiJobProgress(jobId, {
-        processed_products: totalProcessed,
-        successful_products: totalSuccessful,
-        failed_products: totalFailed,
-        errors: errors.length > 0 ? JSON.stringify(errors) : undefined,
-      });
-    } catch (progressError) {
-      console.error("Failed to update job progress:", progressError);
+      const finalJob = await getAiJob(jobId);
+      if (finalJob && finalJob.status === "cancelled") {
+        return;
+      }
+    } catch {
+      // Continue to set final status
     }
-  }
 
-  // Check if job was cancelled before setting final status
-  try {
-    const finalJob = await getAiJob(jobId);
-    if (finalJob && finalJob.status === "cancelled") {
-      return; // Already cancelled, don't overwrite status
-    }
-  } catch {
-    // Continue to set final status
-  }
+    const finalStatus = totalSuccessful > 0 ? "completed" : "failed";
+    const finalProgress = engine.getProgress();
 
-  // Mark job as completed or failed
-  const finalStatus = totalSuccessful > 0 ? "completed" : "failed";
-  try {
     await updateAiJobProgress(jobId, {
       status: finalStatus,
       processed_products: totalProcessed,
       successful_products: totalSuccessful,
       failed_products: totalFailed,
       errors: errors.length > 0 ? JSON.stringify(errors) : undefined,
+      batch_metrics: JSON.stringify({
+        currentBatch: finalProgress.totalBatches,
+        totalBatches: finalProgress.totalBatches,
+        activeWorkers: 0,
+        currentConcurrency: finalProgress.currentConcurrency,
+        circuitState: finalProgress.circuitState,
+        throughput: finalProgress.throughput,
+        lastError: finalProgress.lastError,
+      }),
     });
   } catch (err) {
-    console.error("Failed to update final job status:", err);
+    console.error("BatchEngine processing error:", err);
+
+    // Check cancellation before overwriting status
+    try {
+      const currentJob = await getAiJob(jobId);
+      if (currentJob && currentJob.status === "cancelled") {
+        return;
+      }
+    } catch {
+      // Continue
+    }
+
+    await updateAiJobProgress(jobId, {
+      status: "failed",
+      errors: JSON.stringify([
+        err instanceof Error ? err.message : "Unknown error",
+      ]),
+    });
+  } finally {
+    deleteActiveEngine(jobId);
   }
 }
 

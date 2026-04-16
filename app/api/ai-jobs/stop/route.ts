@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { updateAiJobProgress, getAiJob } from "@/lib/maestra-db";
+import { getActiveEngine } from "@/lib/active-engines";
 
 export const dynamic = "force-dynamic";
 
@@ -35,7 +36,13 @@ export async function POST(request: Request) {
       });
     }
 
-    // Mark job as cancelled — the processing loop checks this before each batch
+    // Stop the BatchEngine immediately (aborts in-flight requests)
+    const engine = getActiveEngine(jobId);
+    if (engine) {
+      engine.stop();
+    }
+
+    // Mark job as cancelled in DB
     await updateAiJobProgress(jobId, { status: "cancelled" as "failed" });
 
     return NextResponse.json({
