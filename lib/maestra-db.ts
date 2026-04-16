@@ -579,10 +579,13 @@ Tu tarea es generar contenido SEO optimizado para productos de Cannon Home en su
 - Usa un tono profesional, cálido y orientado al hogar/confort
 
 ## Reglas de Keywords
-- SOLO usa keywords directamente relacionadas con el producto
-- NO agregues keywords genéricas o irrelevantes (ej: no usar "televisor" para un producto de ropa de cama)
-- Las keywords deben coincidir con la categoría, tipo, material, uso y marca del producto
-- Prioriza keywords del dataset SEO que sean relevantes para el producto específico
+- Prioriza siempre keywords del dataset SEO que sean relevantes para el producto. 
+- Si el dataset tiene keywords aplicables, deben aparecer en el resultado final.
+- Si el dataset no tiene keywords relevantes para el producto, genera variantes naturales de las keywords originales combinando: tamaño, material, uso o tipo de producto. Nunca inventes términos que no reflejen cómo un cliente real buscaría este producto.
+- Las keywords deben reflejar cómo el cliente busca, no cómo está descrito el producto internamente. Evita lenguaje técnico de ficha de producto (ej: "mezcla poliéster algodón" → mal; "sábanas algodón 2 plazas" → bien).
+- No uses keywords genéricas que correspondan a una categoría entera sin especificidad (ej: "ropa de cama", "sábanas", "plumones" solos no son válidos).
+- No uses keywords navegacionales de marca propia (ej: "cannon home", "sabanas cannon"). Estas solo alcanzan a quien ya te conoce y no atraen clientes nuevos.
+- Prioriza keywords con intención comercial o transaccional por sobre informacionales.
 
 ## Campos a generar
 
@@ -690,6 +693,8 @@ export interface AiJob {
   errors: string | null;
   created_at: string;
   updated_at: string;
+  /** JSON-serialized batch engine metrics for live progress */
+  batch_metrics: string | null;
 }
 
 export async function ensureAiJobsTable(): Promise<void> {
@@ -703,9 +708,22 @@ export async function ensureAiJobsTable(): Promise<void> {
       successful_products INTEGER NOT NULL DEFAULT 0,
       failed_products INTEGER NOT NULL DEFAULT 0,
       errors TEXT,
+      batch_metrics TEXT,
       created_at TIMESTAMPTZ DEFAULT NOW(),
       updated_at TIMESTAMPTZ DEFAULT NOW()
     )
+  `;
+  // Add batch_metrics column if it doesn't exist (for existing tables)
+  await sql`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'ai_jobs' AND column_name = 'batch_metrics'
+      ) THEN
+        ALTER TABLE ai_jobs ADD COLUMN batch_metrics TEXT;
+      END IF;
+    END $$;
   `;
 }
 
@@ -725,6 +743,7 @@ export async function createAiJob(id: string, totalProducts: number): Promise<Ai
     successful_products: 0,
     failed_products: 0,
     errors: null,
+    batch_metrics: null,
     created_at: now,
     updated_at: now,
   };
@@ -738,6 +757,7 @@ export async function updateAiJobProgress(
     successful_products?: number;
     failed_products?: number;
     errors?: string;
+    batch_metrics?: string;
   }
 ): Promise<void> {
   const sql = getSql();
@@ -767,6 +787,10 @@ export async function updateAiJobProgress(
   if (update.errors !== undefined) {
     sets.push(`"errors" = $${paramIndex++}`);
     values.push(update.errors);
+  }
+  if (update.batch_metrics !== undefined) {
+    sets.push(`"batch_metrics" = $${paramIndex++}`);
+    values.push(update.batch_metrics);
   }
 
   values.push(id);

@@ -87,6 +87,7 @@ import {
   ChevronsRight,
   Square,
   Store,
+  Eye,
 } from "lucide-react";
 import { Login } from "@/components/login";
 
@@ -138,7 +139,6 @@ export default function Home() {
 
   // AI generation state
   const [isGeneratingAi, setIsGeneratingAi] = useState(false);
-  const [aiProgress, setAiProgress] = useState<string | null>(null);
   const [aiJobId, setAiJobId] = useState<string | null>(null);
   const [aiJobProgress, setAiJobProgress] = useState<{
     processed: number;
@@ -147,6 +147,8 @@ export default function Home() {
     failed: number;
   } | null>(null);
   const aiPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Guard to ensure completion toast fires exactly once
+  const aiCompletedRef = useRef(false);
 
   // Keywords state
   const [keywordStatus, setKeywordStatus] = useState<{ loaded: boolean; count: number }>({ loaded: false, count: 0 });
@@ -653,12 +655,9 @@ export default function Home() {
           stopAiPolling();
           setIsGeneratingAi(false);
           setAiJobId(null);
+          setAiJobProgress(null);
+          aiCompletedRef.current = false;
           toast.success("Procesamiento AI detenido");
-          setAiProgress("Procesamiento detenido por el usuario");
-          setTimeout(() => {
-            setAiProgress(null);
-            setAiJobProgress(null);
-          }, 3000);
         } else {
           toast.error(data.message || "Error al detener procesamiento");
         }
@@ -671,18 +670,18 @@ export default function Home() {
       stopAiPolling();
       setIsGeneratingAi(false);
       setAiJobId(null);
+      setAiJobProgress(null);
+      aiCompletedRef.current = false;
       toast.success("Procesamiento AI detenido");
-      setAiProgress("Procesamiento detenido por el usuario");
-      setTimeout(() => {
-        setAiProgress(null);
-        setAiJobProgress(null);
-      }, 3000);
     }
   }, [aiJobId, stopAiPolling]);
 
   // Poll AI job status
   const pollAiJobStatus = useCallback(
     async (jobId: string) => {
+      // Guard: if already handled completion, skip
+      if (aiCompletedRef.current) return;
+
       try {
         const response = await fetch(`/api/ai-jobs/status?jobId=${jobId}`);
         const data = await response.json();
@@ -693,6 +692,7 @@ export default function Home() {
 
         const job = data.job;
 
+        // Update progress counter (simple: processed / total)
         setAiJobProgress({
           processed: job.processedProducts,
           total: job.totalProducts,
@@ -700,19 +700,16 @@ export default function Home() {
           failed: job.failedProducts,
         });
 
-        setAiProgress(
-          `Procesando: ${job.processedProducts} de ${job.totalProducts} productos...`
-        );
-
-        // If products were processed since last check, refresh the data
-        if (job.processedProducts > 0) {
-          await loadData(false);
-        }
-
+        // Handle terminal states — exactly once
         if (job.status === "completed" || job.status === "failed" || job.status === "cancelled") {
+          // Set guard immediately to prevent duplicate handling
+          aiCompletedRef.current = true;
           stopAiPolling();
           setIsGeneratingAi(false);
           setAiJobId(null);
+
+          // Reload data once now that processing is finished
+          await loadData(false);
 
           if (job.status === "completed") {
             const msg = job.failedProducts > 0
@@ -720,15 +717,13 @@ export default function Home() {
               : `AI completado: ${job.successfulProducts} de ${job.totalProducts} productos procesados`;
             toast.success(msg);
           } else if (job.status === "cancelled") {
-            toast.success("Procesamiento AI detenido");
-            setAiProgress("Procesamiento detenido por el usuario");
+            // Stop handler already showed a toast — no duplicate here
           } else {
             toast.error("El procesamiento AI falló. Revisa los errores.");
           }
 
-          // Keep progress visible for a moment then clear
+          // Clear progress UI after a short delay
           setTimeout(() => {
-            setAiProgress(null);
             setAiJobProgress(null);
           }, 3000);
 
@@ -760,7 +755,6 @@ export default function Home() {
     // For small batches (single selection of <=20 products), use direct API call
     if (mode === "selected" && selectedMagentoRows.size <= 20) {
       setIsGeneratingAi(true);
-      setAiProgress(`Generando campos AI para ${count} productos...`);
       setAiJobProgress({ processed: 0, total: count, successful: 0, failed: 0 });
 
       try {
@@ -786,7 +780,6 @@ export default function Home() {
         toast.error(err instanceof Error ? err.message : "Error al generar con AI");
       } finally {
         setIsGeneratingAi(false);
-        setAiProgress(null);
         setAiJobProgress(null);
       }
       return;
@@ -794,7 +787,7 @@ export default function Home() {
 
     // For large batches, use background job system
     setIsGeneratingAi(true);
-    setAiProgress(`Iniciando procesamiento AI para ${count} productos...`);
+    aiCompletedRef.current = false;
     setAiJobProgress({ processed: 0, total: count, successful: 0, failed: 0 });
 
     try {
@@ -813,21 +806,19 @@ export default function Home() {
         setAiJobId(data.jobId);
         toast.success(`Procesamiento iniciado: ${data.totalProducts} productos`);
 
-        // Start polling for progress every 3 seconds
+        // Start polling for progress every 1.5 seconds for responsive detection
         stopAiPolling();
         aiPollingRef.current = setInterval(() => {
           pollAiJobStatus(data.jobId);
-        }, 3000);
+        }, 1500);
       } else {
         toast.error(data.message || "Error al iniciar procesamiento AI");
         setIsGeneratingAi(false);
-        setAiProgress(null);
         setAiJobProgress(null);
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Error al iniciar procesamiento AI");
       setIsGeneratingAi(false);
-      setAiProgress(null);
       setAiJobProgress(null);
     }
   };
@@ -1004,7 +995,6 @@ export default function Home() {
               className="h-6 object-contain"
             />
             <span className="text-muted-foreground">|</span>
-            <span className="font-semibold">Maestra de Productos</span>
             <span className="text-sm text-muted-foreground">
               {sortedRows.length !== totalRows
                 ? `${sortedRows.length} / ${totalRows} filas`
@@ -1013,6 +1003,17 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => toast.info("Revisar Maestra: proximamente")}
+              disabled={products.length === 0}
+              className="border-emerald-400/50 text-emerald-700 hover:bg-emerald-50 hover:border-emerald-400"
+            >
+              <Eye className="h-4 w-4" />
+              <span className="ml-2">Revisar Maestra</span>
+            </Button>
+
             <AlertDialog>
               <AlertDialogTrigger asChild>
                 <Button
@@ -1291,8 +1292,8 @@ export default function Home() {
           </div>
         )}
 
-        {/* AI Progress */}
-        {aiProgress && (
+        {/* AI Progress — clean minimal UI */}
+        {aiJobProgress && (
           <div className="mt-3 p-3 bg-violet-50 rounded-lg border border-violet-200">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -1301,21 +1302,20 @@ export default function Home() {
                 ) : (
                   <CheckCircle2 className="h-4 w-4 text-green-600" />
                 )}
-                <span className="text-sm font-medium text-violet-700">{aiProgress}</span>
+                <span className="text-sm font-medium text-violet-700">
+                  {isGeneratingAi
+                    ? `Procesando ${aiJobProgress.processed} de ${aiJobProgress.total} productos`
+                    : `Completado: ${aiJobProgress.successful} de ${aiJobProgress.total} productos`}
+                </span>
+                {aiJobProgress.total > 0 && (
+                  <span className="text-xs font-medium text-violet-500">
+                    {Math.round((aiJobProgress.processed / aiJobProgress.total) * 100)}%
+                  </span>
+                )}
               </div>
               <div className="flex items-center gap-3">
-                {aiJobProgress && aiJobProgress.total > 0 && (
-                  <div className="flex items-center gap-3 text-xs text-violet-600">
-                    {aiJobProgress.successful > 0 && (
-                      <span className="text-green-600">{aiJobProgress.successful} exitosos</span>
-                    )}
-                    {aiJobProgress.failed > 0 && (
-                      <span className="text-red-600">{aiJobProgress.failed} fallidos</span>
-                    )}
-                    <span className="font-medium">
-                      {Math.round((aiJobProgress.processed / aiJobProgress.total) * 100)}%
-                    </span>
-                  </div>
+                {aiJobProgress.failed > 0 && (
+                  <span className="text-xs text-red-600">{aiJobProgress.failed} fallidos</span>
                 )}
                 {isGeneratingAi && aiJobId && (
                   <Button
@@ -1332,7 +1332,7 @@ export default function Home() {
             </div>
             <Progress
               value={
-                aiJobProgress && aiJobProgress.total > 0
+                aiJobProgress.total > 0
                   ? (aiJobProgress.processed / aiJobProgress.total) * 100
                   : isGeneratingAi ? 5 : 100
               }
