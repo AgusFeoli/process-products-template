@@ -989,11 +989,9 @@ export default function Home() {
       <header className="shrink-0 border-b border-border bg-background px-4 py-2">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <img
-              src="/cannon-logo.png"
-              alt="Cannon Home"
-              className="h-6 object-contain"
-            />
+            <div className="h-6 px-3 flex items-center justify-center border border-dashed border-muted-foreground/40 rounded bg-muted/30">
+              <span className="text-xs font-medium text-muted-foreground tracking-wide">LOGO</span>
+            </div>
             <span className="text-muted-foreground">|</span>
             <span className="text-sm text-muted-foreground">
               {sortedRows.length !== totalRows

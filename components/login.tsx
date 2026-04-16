@@ -53,11 +53,9 @@ export function Login({ onLoginSuccess }: LoginProps) {
           {/* Header */}
           <div className="text-center space-y-2">
             <div className="flex justify-center mb-4">
-              <img
-                src="/cannon-logo.png"
-                alt="Cannon Home"
-                className="h-12 object-contain"
-              />
+              <div className="h-12 px-4 flex items-center justify-center border-2 border-dashed border-muted-foreground/40 rounded-lg bg-muted/30">
+                <span className="text-sm font-medium text-muted-foreground tracking-wide">INSERTAR LOGO AQUÍ</span>
+              </div>
             </div>
             <h1 className="text-2xl font-bold text-foreground">Maestra de Productos</h1>
             <p className="text-sm text-muted-foreground">
