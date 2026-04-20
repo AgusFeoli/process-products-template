@@ -4,11 +4,11 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  /* Cannon Home color palette — black, white, red */
+  /* GoPersonal color palette — black, white, red */
   --background: oklch(0.99 0 0);
   --foreground: oklch(0.13 0 0);
 
-  /* Cannon red primary (#fc0009) */
+  /* GoPersonal red primary (#fc0009) */
   --primary: oklch(0.53 0.24 27);
   --primary-foreground: oklch(1 0 0);
 
