@@ -1,12 +1,4 @@
-import { neon } from "@neondatabase/serverless";
-
-// Lazy initialization to avoid issues during build
-function getSql() {
-  if (!process.env.DATABASE_URL) {
-    throw new Error("DATABASE_URL is not set");
-  }
-  return neon(process.env.DATABASE_URL);
-}
+import { getSql } from "./pg-client";
 
 export interface MatchedImage {
   id: number;

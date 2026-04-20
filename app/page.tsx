@@ -30,17 +30,19 @@ import {
   exportCsv,
   exportMagentoCsv,
   updateMagentoField,
+  updateMagentoConfig,
+  fetchColumnMeta,
+  fetchMagentoConfig,
   type MaestraProduct,
   type MagentoProduct,
+  type ColumnMeta,
+  type MagentoConfig,
 } from "./actions";
 import {
   getMaestraDisplayName,
-  MAESTRA_TABLE_COLUMN_ORDER,
 } from "@/lib/maestra-columns";
-import {
-  MAGENTO_VIEW_COLUMNS,
-  getMagentoDisplayName,
-} from "@/lib/magento-columns";
+import { createDefaultView, manualDbColumn } from "@/lib/magento-config";
+import { MagentoConfigDialog } from "@/components/magento-config-dialog";
 import { Progress } from "@/components/ui/progress";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -86,13 +88,14 @@ import {
   ChevronsLeft,
   ChevronsRight,
   Square,
-  Store,
   Eye,
+  Plus,
 } from "lucide-react";
 import { Login } from "@/components/login";
 
 type SortDirection = "asc" | "desc" | null;
-type DatasetView = "maestra" | "magento";
+/** Active view id: "maestra" or a magento view id. */
+type DatasetView = string;
 
 export default function Home() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -161,20 +164,81 @@ export default function Home() {
   const [isSavingPrompt, setIsSavingPrompt] = useState(false);
   const [isLoadingPrompt, setIsLoadingPrompt] = useState(false);
 
+  // Dynamic column metadata (from imported file headers)
+  const [columnMeta, setColumnMeta] = useState<ColumnMeta[] | null>(null);
+
+  // Magento configurable export schema (multi-view)
+  const [magentoConfig, setMagentoConfig] = useState<MagentoConfig>({ views: [] });
+  const [showMagentoConfig, setShowMagentoConfig] = useState(false);
+  const [configuringViewId, setConfiguringViewId] = useState<string | null>(null);
+  const [isCreatingView, setIsCreatingView] = useState(false);
+
+  // Generic confirmation dialog state (replaces native browser confirm())
+  const [confirmDialog, setConfirmDialog] = useState<{
+    open: boolean;
+    title: string;
+    description: string;
+    onConfirm: () => void;
+  }>({ open: false, title: "", description: "", onConfirm: () => {} });
+
+  const askConfirm = useCallback(
+    (title: string, description: string, onConfirm: () => void) => {
+      setConfirmDialog({ open: true, title, description, onConfirm });
+    },
+    []
+  );
+
+  // Current magento view (if any)
+  const activeMagentoView = useMemo(() => {
+    if (activeView === "maestra") return null;
+    return magentoConfig.views.find((v) => v.id === activeView) ?? null;
+  }, [activeView, magentoConfig]);
+
+  const isMagentoView = activeMagentoView !== null;
+
   // Visible columns for current view
   const visibleColumns = useMemo(() => {
-    if (activeView === "magento") {
-      return MAGENTO_VIEW_COLUMNS as unknown as string[];
+    if (activeMagentoView) {
+      // Only show columns that the user has manually added to this view
+      return activeMagentoView.columns
+        .filter((c) => c.source.type !== "fixed")
+        .map((c) =>
+          c.source.type === "manual"
+            ? manualDbColumn(activeMagentoView.id, c.id)
+            : `__maestra__:${c.source.maestraColumn}`
+        );
     }
-    return MAESTRA_TABLE_COLUMN_ORDER;
-  }, [activeView]);
+    // Use dynamic column metadata if available
+    if (columnMeta && columnMeta.length > 0) {
+      return columnMeta.map((m) => m.dbColumn);
+    }
+    // Fallback: derive columns from product data (excluding system columns)
+    if (products.length > 0) {
+      return Object.keys(products[0]).filter(
+        (k) => k !== "id" && k !== "created_at" && k !== "updated_at"
+      );
+    }
+    return [];
+  }, [activeMagentoView, columnMeta, products]);
 
   const getDisplayName = useCallback(
     (col: string) => {
-      if (activeView === "magento") return getMagentoDisplayName(col);
-      return getMaestraDisplayName(col);
+      if (activeMagentoView) {
+        if (col.startsWith("__maestra__:")) {
+          const maestraCol = col.slice("__maestra__:".length);
+          const match = activeMagentoView.columns.find(
+            (c) => c.source.type === "maestra" && c.source.maestraColumn === maestraCol
+          );
+          return match?.name ?? maestraCol;
+        }
+        const match = activeMagentoView.columns.find(
+          (c) => c.source.type === "manual" && manualDbColumn(activeMagentoView.id, c.id) === col
+        );
+        return match?.name ?? col;
+      }
+      return getMaestraDisplayName(col, columnMeta ?? undefined);
     },
-    [activeView]
+    [activeMagentoView, columnMeta]
   );
 
   // Handle column header click for sorting
@@ -216,11 +280,26 @@ export default function Home() {
 
   // Current dataset rows
   const currentRows = useMemo(() => {
-    if (activeView === "magento") {
-      return magentoProducts as unknown as Record<string, unknown>[];
+    if (isMagentoView) {
+      // Merge maestra values into each magento row under "__maestra__:<col>" keys
+      // so the table can show them alongside manual columns.
+      const maestraMap = new Map<number, MaestraProduct>();
+      for (const p of products) {
+        if (p.id != null) maestraMap.set(p.id as number, p);
+      }
+      return magentoProducts.map((mg) => {
+        const merged: Record<string, unknown> = { ...(mg as unknown as Record<string, unknown>) };
+        const maestra = maestraMap.get(mg.maestra_id);
+        if (maestra) {
+          for (const [k, v] of Object.entries(maestra)) {
+            merged[`__maestra__:${k}`] = v;
+          }
+        }
+        return merged;
+      });
     }
     return products as unknown as Record<string, unknown>[];
-  }, [activeView, products, magentoProducts]);
+  }, [isMagentoView, products, magentoProducts]);
 
   // Get unique familias for filter (maestra only)
   const uniqueFamilias = useMemo(() => {
@@ -238,7 +317,7 @@ export default function Home() {
   const filteredRows = useMemo(() => {
     let rows = currentRows;
 
-    if (activeView === "maestra") {
+    if (!isMagentoView) {
       if (familiaFilter && familiaFilter !== "__all__") {
         rows = rows.filter(
           (row) =>
@@ -260,7 +339,7 @@ export default function Home() {
     }
 
     return rows;
-  }, [currentRows, searchQuery, familiaFilter, activeView]);
+  }, [currentRows, searchQuery, familiaFilter, isMagentoView]);
 
   // Sorted rows
   const sortedRows = useMemo(() => {
@@ -288,8 +367,8 @@ export default function Home() {
   }, [filteredRows, sortColumn, sortDirection]);
 
   // Active selection set for current view
-  const selectedRows = activeView === "maestra" ? selectedMaestraRows : selectedMagentoRows;
-  const setSelectedRows = activeView === "maestra" ? setSelectedMaestraRows : setSelectedMagentoRows;
+  const selectedRows = isMagentoView ? selectedMagentoRows : selectedMaestraRows;
+  const setSelectedRows = isMagentoView ? setSelectedMagentoRows : setSelectedMaestraRows;
 
   // Pagination: compute page slice from sortedRows
   const totalPages = Math.max(1, Math.ceil(sortedRows.length / pageSize));
@@ -309,10 +388,12 @@ export default function Home() {
     setError(null);
 
     try {
-      const [maestraResult, magentoResult, kwStatus] = await Promise.all([
+      const [maestraResult, magentoResult, kwStatus, colMeta, mgConfig] = await Promise.all([
         fetchMaestraData(),
         fetchMagentoData(),
         fetchKeywordStatus(),
+        fetchColumnMeta(),
+        fetchMagentoConfig(),
       ]);
 
       if (maestraResult.success && maestraResult.data) {
@@ -326,6 +407,10 @@ export default function Home() {
       }
 
       setKeywordStatus(kwStatus);
+      if (colMeta) {
+        setColumnMeta(colMeta);
+      }
+      setMagentoConfig(mgConfig);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load data");
     } finally {
@@ -454,8 +539,12 @@ export default function Home() {
   };
 
   const handleExportMagento = async () => {
+    if (!activeMagentoView) {
+      toast.error("Selecciona una vista Magento primero");
+      return;
+    }
     const ids = selectedMagentoRows.size > 0 ? Array.from(selectedMagentoRows) : undefined;
-    const result = await exportMagentoCsv(ids);
+    const result = await exportMagentoCsv(activeMagentoView.id, ids);
     if (result.success && result.csv) {
       const blob = new Blob(["\uFEFF" + result.csv], {
         type: "text/csv;charset=utf-8;",
@@ -560,7 +649,12 @@ export default function Home() {
     columnName: string,
     value: string
   ) => {
-    if (activeView === "magento") {
+    if (isMagentoView) {
+      // Maestra-backed Magento columns are read-only (they reflect maestra data)
+      if (columnName.startsWith("__maestra__:")) {
+        toast.error("Esta columna viene de la maestra y no se edita aquí");
+        return;
+      }
       const result = await updateMagentoField(id, columnName, value);
       if (result.success) {
         await loadData(false);
@@ -750,6 +844,24 @@ export default function Home() {
       return;
     }
 
+    if (!activeMagentoView) {
+      toast.error("No hay una vista activa");
+      return;
+    }
+
+    // Collect manual columns from the active view — these are the columns AI should fill
+    const manualColumns = activeMagentoView.columns
+      .filter((c) => c.source.type === "manual")
+      .map((c) => ({
+        dbColumn: manualDbColumn(activeMagentoView.id, c.id),
+        name: c.name,
+      }));
+
+    if (manualColumns.length === 0) {
+      toast.error("No hay columnas manuales para generar. Agrega columnas primero.");
+      return;
+    }
+
     const count = mode === "selected" ? selectedMagentoRows.size : magentoProducts.length;
 
     // For small batches (single selection of <=20 products), use direct API call
@@ -764,6 +876,7 @@ export default function Home() {
           body: JSON.stringify({
             productIds: Array.from(selectedMagentoRows),
             mode: "selected",
+            columns: manualColumns,
           }),
         });
 
@@ -797,6 +910,7 @@ export default function Home() {
         body: JSON.stringify({
           productIds: mode === "selected" ? Array.from(selectedMagentoRows) : undefined,
           mode,
+          columns: manualColumns,
         }),
       });
 
@@ -825,11 +939,111 @@ export default function Home() {
 
   // Reset sort/search when switching views
   const handleViewChange = (view: string) => {
-    setActiveView(view as DatasetView);
+    setActiveView(view);
     setSortColumn(null);
     setSortDirection(null);
     setSearchQuery("");
     setCurrentPage(1);
+  };
+
+  // Create a new magento-style view
+  const handleCreateView = async () => {
+    if (isCreatingView) return;
+    setIsCreatingView(true);
+    try {
+      const nextIndex = magentoConfig.views.length + 1;
+      const newView = createDefaultView(nextIndex);
+      const newConfig: MagentoConfig = {
+        views: [...magentoConfig.views, newView],
+      };
+      const result = await updateMagentoConfig(newConfig);
+      if (result.success) {
+        setMagentoConfig(newConfig);
+        setActiveView(newView.id);
+        setConfiguringViewId(newView.id);
+        setShowMagentoConfig(true);
+        toast.success("Vista creada");
+      } else {
+        toast.error(result.error || "Error al crear vista");
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Error al crear vista");
+    } finally {
+      setIsCreatingView(false);
+    }
+  };
+
+  // Delete the given magento view
+  const handleDeleteView = (viewId: string) => {
+    const viewName = magentoConfig.views.find((v) => v.id === viewId)?.name ?? "vista";
+    askConfirm(
+      `Eliminar vista "${viewName}"`,
+      "Los datos manuales de esta vista se perderán. Esta acción no se puede deshacer.",
+      async () => {
+        const newConfig: MagentoConfig = {
+          views: magentoConfig.views.filter((v) => v.id !== viewId),
+        };
+        try {
+          const result = await updateMagentoConfig(newConfig);
+          if (result.success) {
+            setMagentoConfig(newConfig);
+            if (activeView === viewId) setActiveView("maestra");
+            toast.success("Vista eliminada");
+          } else {
+            toast.error(result.error || "Error al eliminar vista");
+          }
+        } catch (err) {
+          toast.error(err instanceof Error ? err.message : "Error al eliminar vista");
+        }
+      }
+    );
+  };
+
+  // Open config dialog for the current magento view
+  const handleOpenConfigForCurrentView = () => {
+    if (!activeMagentoView) return;
+    setConfiguringViewId(activeMagentoView.id);
+    setShowMagentoConfig(true);
+  };
+
+  // Delete a single column from the active Magento view
+  const handleDeleteMagentoColumn = (colName: string) => {
+    if (!activeMagentoView) return;
+    // Find the MagentoColumn that maps to this visible column name
+    const colConfig = activeMagentoView.columns.find((c) => {
+      if (c.source.type === "manual") {
+        return manualDbColumn(activeMagentoView.id, c.id) === colName;
+      }
+      if (c.source.type === "maestra") {
+        return `__maestra__:${c.source.maestraColumn}` === colName;
+      }
+      return false;
+    });
+    if (!colConfig) return;
+    const displayName = colConfig.name;
+    askConfirm(
+      `Eliminar columna "${displayName}"`,
+      "La columna será eliminada de esta vista. Esta acción no se puede deshacer.",
+      async () => {
+        const updatedViews = magentoConfig.views.map((v) =>
+          v.id === activeMagentoView.id
+            ? { ...v, columns: v.columns.filter((c) => c.id !== colConfig.id) }
+            : v
+        );
+        const newConfig: MagentoConfig = { views: updatedViews };
+        try {
+          const result = await updateMagentoConfig(newConfig);
+          if (result.success) {
+            setMagentoConfig(newConfig);
+            toast.success(`Columna "${displayName}" eliminada`);
+          } else {
+            toast.error(result.error || "Error al eliminar columna");
+          }
+        } catch (err) {
+          toast.error(err instanceof Error ? err.message : "Error al eliminar columna");
+        }
+      }
+    );
   };
 
   // Auth check loading
@@ -882,7 +1096,7 @@ export default function Home() {
     );
   }
 
-  const totalRows = activeView === "maestra" ? products.length : magentoProducts.length;
+  const totalRows = isMagentoView ? magentoProducts.length : products.length;
 
   return (
     <div className="h-screen flex flex-col bg-background">
@@ -916,6 +1130,35 @@ export default function Home() {
             <AlertDialogCancel>Cancelar</AlertDialogCancel>
             <AlertDialogAction onClick={handleImportConfirmed}>
               Continuar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Generic confirmation dialog (replaces native browser confirm) */}
+      <AlertDialog
+        open={confirmDialog.open}
+        onOpenChange={(open) => {
+          if (!open) setConfirmDialog((prev) => ({ ...prev, open: false }));
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{confirmDialog.title}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {confirmDialog.description}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                confirmDialog.onConfirm();
+                setConfirmDialog((prev) => ({ ...prev, open: false }));
+              }}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Eliminar
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -984,6 +1227,20 @@ export default function Home() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Magento Export Config Dialog */}
+      <MagentoConfigDialog
+        open={showMagentoConfig}
+        onOpenChange={setShowMagentoConfig}
+        config={magentoConfig}
+        viewId={configuringViewId}
+        maestraColumns={columnMeta ?? []}
+        onSaved={(cfg) => {
+          setMagentoConfig(cfg);
+          void loadData(false);
+        }}
+        onDeleteView={handleDeleteView}
+      />
 
       {/* Top Bar */}
       <header className="shrink-0 border-b border-border bg-background px-4 py-2">
@@ -1086,42 +1343,23 @@ export default function Home() {
               </span>
             </Button>
 
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleExportMagento}
-              disabled={products.length === 0}
-              className="border-primary/30 text-primary hover:bg-primary/5"
-            >
-              <ShoppingCart className="h-4 w-4" />
-              <span className="ml-2">
-                {selectedMagentoRows.size > 0
-                  ? `Exportar Magento (${selectedMagentoRows.size})`
-                  : "Exportar Magento"}
-              </span>
-            </Button>
+            {activeMagentoView && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleExportMagento}
+                disabled={products.length === 0 || activeMagentoView.columns.length === 0}
+                className="border-primary/30 text-primary hover:bg-primary/5"
+              >
+                <ShoppingCart className="h-4 w-4" />
+                <span className="ml-2">
+                  {selectedMagentoRows.size > 0
+                    ? `${activeMagentoView.buttonLabel} (${selectedMagentoRows.size})`
+                    : activeMagentoView.buttonLabel}
+                </span>
+              </Button>
+            )}
 
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => toast.info("Exportación Falabella próximamente")}
-              disabled={products.length === 0}
-              className="border-orange-400/40 text-orange-600 hover:bg-orange-50"
-            >
-              <Store className="h-4 w-4" />
-              <span className="ml-2">Exportar Falabella</span>
-            </Button>
-
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => toast.info("Exportación Tiendas Paris próximamente")}
-              disabled={products.length === 0}
-              className="border-blue-400/40 text-blue-600 hover:bg-blue-50"
-            >
-              <Store className="h-4 w-4" />
-              <span className="ml-2">Exportar Tiendas Paris</span>
-            </Button>
           </div>
         </div>
 
@@ -1133,17 +1371,55 @@ export default function Home() {
                 <Database className="h-3.5 w-3.5" />
                 Maestra
               </TabsTrigger>
-              <TabsTrigger value="magento" className="text-xs px-3 gap-1.5">
-                <ShoppingCart className="h-3.5 w-3.5" />
-                Magento
-              </TabsTrigger>
+              {magentoConfig.views.map((v) => (
+                <TabsTrigger key={v.id} value={v.id} className="text-xs px-3 gap-1.5 group/tab pr-1.5">
+                  <ShoppingCart className="h-3.5 w-3.5" />
+                  {v.name}
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      e.preventDefault();
+                      handleDeleteView(v.id);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        handleDeleteView(v.id);
+                      }
+                    }}
+                    className="opacity-0 group-hover/tab:opacity-100 ml-1 p-0.5 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive transition-all inline-flex items-center"
+                    title={`Eliminar ${v.name}`}
+                    aria-label={`Eliminar ${v.name}`}
+                  >
+                    <X className="h-3 w-3" />
+                  </span>
+                </TabsTrigger>
+              ))}
             </TabsList>
           </Tabs>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleCreateView}
+            disabled={isCreatingView}
+            className="h-8 w-8 p-0 flex-none"
+            title="Nueva vista de exportación"
+          >
+            {isCreatingView ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Plus className="h-4 w-4" />
+            )}
+          </Button>
 
           <div className="relative flex-1 max-w-sm">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
-              placeholder={activeView === "maestra" ? "Buscar en Maestra..." : "Buscar en Magento..."}
+              placeholder={isMagentoView ? `Buscar en ${activeMagentoView?.name ?? "vista"}...` : "Buscar en Maestra..."}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="pl-9 h-8 text-sm"
@@ -1158,7 +1434,7 @@ export default function Home() {
             )}
           </div>
 
-          {activeView === "maestra" && (
+          {!isMagentoView && (
             <Select value={familiaFilter} onValueChange={setFamiliaFilter}>
               <SelectTrigger className="w-[200px] h-8 text-sm">
                 <SelectValue placeholder="Todas las familias" />
@@ -1174,7 +1450,7 @@ export default function Home() {
             </Select>
           )}
 
-          {activeView === "magento" && (
+          {isMagentoView && (
             <div className="flex items-center gap-2">
               {/* Keyword dataset indicator */}
               <div className="flex items-center gap-1.5 border border-border rounded-md px-2.5 py-1 h-8">
@@ -1360,7 +1636,7 @@ export default function Home() {
                     return (
                       <th
                         key={colName}
-                        className="border-b border-border px-4 py-3 text-left font-medium text-foreground whitespace-nowrap cursor-pointer hover:bg-muted/80 transition-colors select-none"
+                        className="border-b border-border px-4 py-3 text-left font-medium text-foreground whitespace-nowrap cursor-pointer hover:bg-muted/80 transition-colors select-none group/col"
                         onClick={() => handleSort(colName)}
                       >
                         <div className="flex items-center gap-2">
@@ -1376,13 +1652,40 @@ export default function Home() {
                               <ArrowUpDown className="h-4 w-4 opacity-30" />
                             )}
                           </span>
+                          {isMagentoView && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteMagentoColumn(colName);
+                              }}
+                              className="opacity-0 group-hover/col:opacity-100 ml-auto text-muted-foreground hover:text-destructive transition-all shrink-0"
+                              title="Eliminar columna"
+                              aria-label="Eliminar columna"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          )}
                         </div>
                       </th>
                     );
                   })}
-                  {activeView === "maestra" && (
+                  {!isMagentoView && (
                     <th className="border-b border-border px-4 py-3 text-left font-medium w-20">
                       Acciones
+                    </th>
+                  )}
+                  {isMagentoView && (
+                    <th className="border-b border-border px-2 py-3 text-right font-medium w-12">
+                      <button
+                        type="button"
+                        onClick={handleOpenConfigForCurrentView}
+                        className="inline-flex items-center justify-center h-7 w-7 rounded-md border border-border bg-background hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+                        title="Agregar / configurar columnas"
+                        aria-label="Configurar columnas"
+                      >
+                        <Plus className="h-4 w-4" />
+                      </button>
                     </th>
                   )}
                 </tr>
@@ -1404,7 +1707,7 @@ export default function Home() {
                         />
                       </td>
                       {visibleColumns.map((colName) => {
-                        const isLongText = colName === "short_description" || colName === "long_description" || colName === "meta_description";
+                        const isLongText = false;
                         return (
                           <td
                             key={colName}
@@ -1418,7 +1721,7 @@ export default function Home() {
                           </td>
                         );
                       })}
-                      {activeView === "maestra" && (
+                      {!isMagentoView && (
                         <td className="border-b border-border px-4 py-2">
                           <Button
                             variant="ghost"
@@ -1429,6 +1732,9 @@ export default function Home() {
                             Eliminar
                           </Button>
                         </td>
+                      )}
+                      {isMagentoView && (
+                        <td className="border-b border-border px-2 py-2" />
                       )}
                     </tr>
                   );

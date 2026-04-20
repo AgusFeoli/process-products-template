@@ -1,95 +1,85 @@
-import { neon } from "@neondatabase/serverless";
+import { getSql } from "./pg-client";
 import {
-  MAESTRA_TABLE_COLUMN_ORDER,
+  type ColumnMeta,
   type MaestraProduct,
+  buildColumnMeta,
+  MAESTRA_COLUMN_MAP,
 } from "./maestra-columns";
 import type { MagentoProduct } from "./magento-columns";
+import {
+  type MagentoConfig,
+  type MagentoViewConfig,
+  DEFAULT_MAGENTO_CONFIG,
+  manualDbColumn,
+} from "./magento-config";
 
-// Re-export everything from maestra-columns for server-side convenience
+// Re-export from maestra-columns for server-side convenience
 export {
   MAESTRA_COLUMN_MAP,
-  MAESTRA_DB_TO_EXCEL,
-  MAESTRA_TABLE_COLUMN_ORDER,
-  MAESTRA_EXPORT_ORDER,
   getMaestraDisplayName,
+  buildColumnMeta,
+  type ColumnMeta,
   type MaestraProduct,
 } from "./maestra-columns";
 
 export type { MagentoProduct } from "./magento-columns";
 
-function getSql() {
-  const url = process.env.DATABASE_URL;
-  if (!url) {
-    throw new Error("DATABASE_URL environment variable is not set");
-  }
-  return neon(url);
-}
-
 const MAESTRA_TABLE = "maestra_products";
 
-// Columns that are numeric (DOUBLE PRECISION in PostgreSQL)
-const NUMERIC_COLUMNS = new Set([
-  "inner_qty",
-  "sub_inner",
-  "length_sales_unit",
-  "width_sales_unit",
-  "height_sales_unit",
-  "weight_sales_unit",
-  "volume_sales_unit",
-  "profundidad",
-  "ancho_unidad",
-  "alto_unidad",
-  "peso_neto_unidad",
-  "unidades_por_pallet",
-]);
+// ============================================
+// Column Metadata persistence (app_settings)
+// ============================================
 
-// Create or ensure the maestra table exists
+/** Save column metadata to app_settings */
+export async function saveMaestraColumnMeta(meta: ColumnMeta[]): Promise<void> {
+  const sql = getSql();
+  await ensureSettingsTable();
+  const now = new Date().toISOString();
+  const value = JSON.stringify(meta);
+  await sql`
+    INSERT INTO app_settings (key, value, updated_at)
+    VALUES ('maestra_column_meta', ${value}, ${now})
+    ON CONFLICT (key) DO UPDATE SET value = ${value}, updated_at = ${now}
+  `;
+}
+
+/** Load column metadata from app_settings. Returns null if no metadata stored yet. */
+export async function loadMaestraColumnMeta(): Promise<ColumnMeta[] | null> {
+  const sql = getSql();
+  await ensureSettingsTable();
+  const rows = await sql`SELECT value FROM app_settings WHERE key = 'maestra_column_meta'`;
+  if (rows.length === 0) return null;
+  try {
+    return JSON.parse(rows[0].value as string) as ColumnMeta[];
+  } catch {
+    return null;
+  }
+}
+
+// Create or ensure the maestra table exists with base columns (id, created_at, updated_at).
+// Data columns are added dynamically when importing.
 export async function ensureMaestraTable(): Promise<void> {
   const sql = getSql();
   await sql`
     CREATE TABLE IF NOT EXISTS maestra_products (
       id SERIAL PRIMARY KEY,
-      item_no TEXT,
-      item_description TEXT,
-      super_familia TEXT,
-      familia TEXT,
-      sub_familia TEXT,
-      sub_agrupacion TEXT,
-      temporalidad TEXT,
-      clasificacion_abc TEXT,
-      estado_articulo TEXT,
-      tipo_articulo TEXT,
-      pais_origen TEXT,
-      procedencia TEXT,
-      coleccion TEXT,
-      calidad TEXT,
-      composicion TEXT,
-      rubro TEXT,
-      diseno TEXT,
-      color TEXT,
-      color_homologado TEXT,
-      estilo TEXT,
-      marca TEXT,
-      categoria_venta TEXT,
-      exclusivo TEXT,
-      shipping_type TEXT,
-      inner_qty DOUBLE PRECISION,
-      sub_inner DOUBLE PRECISION,
-      length_sales_unit DOUBLE PRECISION,
-      width_sales_unit DOUBLE PRECISION,
-      height_sales_unit DOUBLE PRECISION,
-      weight_sales_unit DOUBLE PRECISION,
-      volume_sales_unit DOUBLE PRECISION,
-      profundidad DOUBLE PRECISION,
-      ancho_unidad DOUBLE PRECISION,
-      alto_unidad DOUBLE PRECISION,
-      tamano TEXT,
-      peso_neto_unidad DOUBLE PRECISION,
-      unidades_por_pallet DOUBLE PRECISION,
       created_at TIMESTAMPTZ DEFAULT NOW(),
       updated_at TIMESTAMPTZ DEFAULT NOW()
     )
   `;
+}
+
+/** Ensure all columns from the metadata exist in the table. Adds missing columns as TEXT. */
+export async function ensureMaestraColumns(meta: ColumnMeta[]): Promise<void> {
+  const sql = getSql();
+  await ensureMaestraTable();
+  for (const col of meta) {
+    try {
+      await sql(`ALTER TABLE ${MAESTRA_TABLE} ADD COLUMN IF NOT EXISTS "${col.dbColumn}" TEXT`);
+    } catch {
+      // Column already exists or other non-critical error
+    }
+  }
 }
 
 // Get all maestra products
@@ -117,9 +107,10 @@ export async function getMaestraCount(): Promise<number> {
   return Number(result[0].count);
 }
 
-// Insert rows in bulk
+// Insert rows in bulk (dynamic columns from row keys)
 export async function insertMaestraRows(
-  rows: Record<string, string | number | null>[]
+  rows: Record<string, string | number | null>[],
+  columnMeta?: ColumnMeta[]
 ): Promise<{ inserted: number; errors: string[] }> {
   if (rows.length === 0) {
     return { inserted: 0, errors: [] };
@@ -127,7 +118,12 @@ export async function insertMaestraRows(
 
   const sql = getSql();
   await ensureMaestraTable();
-  const columns = MAESTRA_TABLE_COLUMN_ORDER;
+
+  // Determine column order: use columnMeta if provided, otherwise derive from row keys
+  const columns = columnMeta
+    ? columnMeta.map((m) => m.dbColumn)
+    : Object.keys(rows[0]).filter((k) => k !== "id" && k !== "created_at" && k !== "updated_at");
+
   const now = new Date().toISOString();
 
   let inserted = 0;
@@ -150,15 +146,8 @@ export async function insertMaestraRows(
       for (let j = 0; j < columns.length; j++) {
         const col = columns[j];
         const val = row[col];
-        let finalVal: string | number | null = null;
-        if (val !== null && val !== undefined && val !== "") {
-          if (NUMERIC_COLUMNS.has(col)) {
-            const num = Number(val);
-            finalVal = isNaN(num) ? null : num;
-          } else {
-            finalVal = String(val);
-          }
-        }
+        const finalVal: string | number | null =
+          val !== null && val !== undefined && val !== "" ? val : null;
         params.push(finalVal);
         rowPlaceholders.push(`$${params.length}`);
       }
@@ -188,15 +177,8 @@ export async function insertMaestraRows(
           for (let j = 0; j < columns.length; j++) {
             const col = columns[j];
             const val = row[col];
-            let finalVal: string | number | null = null;
-            if (val !== null && val !== undefined && val !== "") {
-              if (NUMERIC_COLUMNS.has(col)) {
-                const num = Number(val);
-                finalVal = isNaN(num) ? null : num;
-              } else {
-                finalVal = String(val);
-              }
-            }
+            const finalVal: string | number | null =
+              val !== null && val !== undefined && val !== "" ? val : null;
             rowParams.push(finalVal);
             rowPlaceholders.push(`$${rowParams.length}`);
           }
@@ -229,15 +211,9 @@ export async function updateMaestraCell(
   const sql = getSql();
   const now = new Date().toISOString();
 
-  let finalValue: string | number | null = value;
-  if (value !== null && NUMERIC_COLUMNS.has(columnName)) {
-    const num = Number(value);
-    finalValue = isNaN(num) ? null : num;
-  }
-
   // Use parameterized query with dynamic column name (column name is from our own column list, safe)
   const query = `UPDATE ${MAESTRA_TABLE} SET "${columnName}" = $1, "updated_at" = $2 WHERE "id" = $3`;
-  await sql(query, [finalValue, now, id]);
+  await sql(query, [value, now, id]);
 }
 
 // Delete a single row
@@ -376,7 +352,7 @@ export async function updateMagentoCell(
   await sql(query, [finalValue, now, id]);
 }
 
-// Bulk update AI-generated fields for multiple products
+// Bulk update AI-generated fields for multiple products (legacy — kept for compatibility)
 export async function bulkUpdateMagentoAiFields(
   updates: {
     id: number;
@@ -413,12 +389,205 @@ export async function bulkUpdateMagentoAiFields(
   return updated;
 }
 
+// Bulk update dynamic columns for multiple products (used by AI generation with user-defined columns)
+export async function bulkUpdateMagentoDynamicFields(
+  updates: Record<string, unknown>[],
+  dbColumns: string[]
+): Promise<number> {
+  if (updates.length === 0 || dbColumns.length === 0) return 0;
+  const sql = getSql();
+  const now = new Date().toISOString();
+  let updated = 0;
+
+  for (const row of updates) {
+    const id = row.id as number;
+    if (!id) continue;
+
+    // Build SET clause dynamically for the specified columns
+    const setClauses: string[] = [];
+    const params: (string | number | null)[] = [];
+    let paramIndex = 1;
+
+    for (const col of dbColumns) {
+      const val = row[col];
+      setClauses.push(`"${col}" = $${paramIndex}`);
+      params.push(val != null ? String(val) : null);
+      paramIndex++;
+    }
+
+    // Add updated_at
+    setClauses.push(`"updated_at" = $${paramIndex}`);
+    params.push(now);
+    paramIndex++;
+
+    // Add id for WHERE clause
+    params.push(id);
+
+    const query = `UPDATE magento_products SET ${setClauses.join(", ")} WHERE id = $${paramIndex}`;
+
+    try {
+      await sql(query, params);
+      updated++;
+    } catch (err) {
+      console.error(`Failed to update magento product ${id}:`, err);
+    }
+  }
+
+  return updated;
+}
+
+/**
+ * Update magento dynamic fields using _row_id (the DB id as a string).
+ * The id is passed as a string through the AI round-trip to avoid BigInt
+ * precision loss, and matched via id::text in the WHERE clause.
+ */
+export async function bulkUpdateMagentoDynamicFieldsByRowId(
+  updates: Record<string, unknown>[],
+  dbColumns: string[]
+): Promise<number> {
+  if (updates.length === 0 || dbColumns.length === 0) return 0;
+  const sql = getSql();
+  const now = new Date().toISOString();
+  let updated = 0;
+
+  for (const row of updates) {
+    const rowId = row._row_id as string;
+    if (!rowId) continue;
+
+    // Build SET clause dynamically for the specified columns
+    const setClauses: string[] = [];
+    const params: (string | number | null)[] = [];
+    let paramIndex = 1;
+
+    for (const col of dbColumns) {
+      const val = row[col];
+      setClauses.push(`"${col}" = $${paramIndex}`);
+      params.push(val != null ? String(val) : null);
+      paramIndex++;
+    }
+
+    // Add updated_at
+    setClauses.push(`"updated_at" = $${paramIndex}`);
+    params.push(now);
+    paramIndex++;
+
+    // Add row id for WHERE clause — compare as text to avoid BigInt precision issues
+    params.push(rowId);
+
+    const query = `UPDATE magento_products SET ${setClauses.join(", ")} WHERE id::text = $${paramIndex}`;
+
+    try {
+      await sql(query, params);
+      updated++;
+    } catch (err) {
+      console.error(`Failed to update magento product with id ${rowId}:`, err);
+    }
+  }
+
+  return updated;
+}
+
 // Get magento count
 export async function getMagentoCount(): Promise<number> {
   const sql = getSql();
   await ensureMagentoTable();
   const result = await sql`SELECT COUNT(*) as count FROM magento_products`;
   return Number(result[0].count);
+}
+
+// ============================================
+// Magento Export Config (configurable columns)
+// ============================================
+
+/**
+ * Load the Magento export config (list of views). Returns defaults if none saved.
+ * Transparently migrates legacy single-config shape ({ buttonLabel, columns }) into a
+ * single-view array.
+ */
+export async function loadMagentoConfig(): Promise<MagentoConfig> {
+  const sql = getSql();
+  await ensureSettingsTable();
+  const rows = await sql`SELECT value FROM app_settings WHERE key = 'magento_config'`;
+  if (rows.length === 0) return DEFAULT_MAGENTO_CONFIG;
+  try {
+    const parsed = JSON.parse(rows[0].value as string) as unknown;
+    if (!parsed || typeof parsed !== "object") return DEFAULT_MAGENTO_CONFIG;
+    const obj = parsed as Record<string, unknown>;
+
+    // New shape: { views: MagentoViewConfig[] }
+    if (Array.isArray(obj.views)) {
+      return {
+        views: (obj.views as MagentoViewConfig[]).map((v) => ({
+          id: String(v.id ?? ""),
+          name: v.name || "Magento",
+          buttonLabel: v.buttonLabel || "Exportar Magento",
+          columns: Array.isArray(v.columns) ? v.columns : [],
+        })).filter((v) => v.id),
+      };
+    }
+
+    // Legacy shape: { buttonLabel, columns } — migrate to a single view
+    if (Array.isArray(obj.columns)) {
+      const legacyView: MagentoViewConfig = {
+        id: `view_legacy_${Date.now().toString(36)}`,
+        name: "Magento",
+        buttonLabel: (obj.buttonLabel as string) || "Exportar Magento",
+        columns: obj.columns as MagentoViewConfig["columns"],
+      };
+      return { views: [legacyView] };
+    }
+
+    return DEFAULT_MAGENTO_CONFIG;
+  } catch {
+    return DEFAULT_MAGENTO_CONFIG;
+  }
+}
+
+/**
+ * Save the Magento export config. Ensures a DB column exists in magento_products for every
+ * manual column across all views (namespaced with the view id to keep data isolated per view).
+ */
+export async function saveMagentoConfig(config: MagentoConfig): Promise<void> {
+  const sql = getSql();
+  await ensureSettingsTable();
+  await ensureMagentoTable();
+
+  for (const view of config.views) {
+    for (const col of view.columns) {
+      if (col.source.type === "manual") {
+        const dbCol = manualDbColumn(view.id, col.id);
+        try {
+          await sql(`ALTER TABLE magento_products ADD COLUMN IF NOT EXISTS "${dbCol}" TEXT`);
+        } catch {
+          // column may already exist or name conflict — ignore
+        }
+      }
+    }
+  }
+
+  const value = JSON.stringify(config);
+  const now = new Date().toISOString();
+  await sql`
+    INSERT INTO app_settings (key, value, updated_at)
+    VALUES ('magento_config', ${value}, ${now})
+    ON CONFLICT (key) DO UPDATE SET value = ${value}, updated_at = ${now}
+  `;
+}
+
+/** Ensure DB columns for the given view's manual columns exist. */
+export async function ensureMagentoManualColumnsForView(view: MagentoViewConfig): Promise<void> {
+  const sql = getSql();
+  await ensureMagentoTable();
+  for (const col of view.columns) {
+    if (col.source.type === "manual") {
+      const dbCol = manualDbColumn(view.id, col.id);
+      try {
+        await sql(`ALTER TABLE magento_products ADD COLUMN IF NOT EXISTS "${dbCol}" TEXT`);
+      } catch {
+        // ignore
+      }
+    }
+  }
 }
 
 // ============================================

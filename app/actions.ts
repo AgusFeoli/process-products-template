@@ -16,18 +16,22 @@ import {
   getSystemPrompt,
   saveSystemPrompt,
   getDefaultSystemPrompt,
+  loadMaestraColumnMeta,
+  loadMagentoConfig,
+  saveMagentoConfig,
   type MaestraProduct,
   type MagentoProduct,
   type SeoKeyword,
-  MAESTRA_COLUMN_MAP,
-  MAESTRA_EXPORT_ORDER,
+  type ColumnMeta,
 } from "@/lib/maestra-db";
-import {
-  MAGENTO_CSV_COLUMNS,
-  MAGENTO_FIXED_VALUES,
-  MAGENTO_MAESTRA_MAPPED_FIELDS,
-} from "@/lib/magento-columns";
-export type { MaestraProduct, MagentoProduct, SeoKeyword };
+import { manualDbColumn, type MagentoConfig } from "@/lib/magento-config";
+export type { MaestraProduct, MagentoProduct, SeoKeyword, ColumnMeta };
+export type {
+  MagentoConfig,
+  MagentoViewConfig,
+  MagentoColumn,
+  MagentoColumnSource,
+} from "@/lib/magento-config";
 
 // Check database connection
 export async function checkConnection(): Promise<{
@@ -58,6 +62,15 @@ export async function fetchMaestraData(): Promise<{
       success: false,
       error: error instanceof Error ? error.message : "Failed to fetch data",
     };
+  }
+}
+
+// Fetch column metadata (dynamic columns from imported file)
+export async function fetchColumnMeta(): Promise<ColumnMeta[] | null> {
+  try {
+    return await loadMaestraColumnMeta();
+  } catch {
+    return null;
   }
 }
 
@@ -122,7 +135,7 @@ export async function deleteAllRows(): Promise<{
   }
 }
 
-// Export as CSV
+// Export as CSV (uses dynamic column metadata from the imported file)
 export async function exportCsv(productIds?: number[]): Promise<{
   success: boolean;
   csv?: string;
@@ -134,10 +147,8 @@ export async function exportCsv(productIds?: number[]): Promise<{
       ? await getMaestraProductsByIds(productIds)
       : await getMaestraProducts();
 
-    // Map DB columns to export order
-    const dbColumnsInOrder = MAESTRA_EXPORT_ORDER.map(
-      (xlsxHeader) => MAESTRA_COLUMN_MAP[xlsxHeader]
-    );
+    // Load column metadata for export headers
+    const columnMeta = await loadMaestraColumnMeta();
 
     // Escape a CSV field: wrap in quotes if it contains comma, quote, or newline
     const escapeCsvField = (val: string | number | null): string => {
@@ -149,24 +160,45 @@ export async function exportCsv(productIds?: number[]): Promise<{
       return str;
     };
 
-    // Build CSV string
-    const headerLine = MAESTRA_EXPORT_ORDER.map(escapeCsvField).join(",");
-    const dataLines = data.map((row) => {
-      return dbColumnsInOrder
-        .map((dbCol) => {
-          const value = (row as unknown as Record<string, unknown>)[dbCol];
-          return escapeCsvField(value as string | number | null);
-        })
-        .join(",");
-    });
+    if (columnMeta && columnMeta.length > 0) {
+      // Use dynamic columns from the imported file
+      const headerLine = columnMeta.map((m) => escapeCsvField(m.excelHeader)).join(",");
+      const dataLines = data.map((row) => {
+        return columnMeta
+          .map((m) => {
+            const value = (row as Record<string, unknown>)[m.dbColumn];
+            return escapeCsvField(value as string | number | null);
+          })
+          .join(",");
+      });
+      const csv = [headerLine, ...dataLines].join("\n");
+      return {
+        success: true,
+        csv,
+        filename: `maestra-export-${new Date().toISOString().slice(0, 10)}.csv`,
+      };
+    }
 
-    const csv = [headerLine, ...dataLines].join("\n");
+    // Fallback: export all columns except system columns
+    if (data.length > 0) {
+      const allKeys = Object.keys(data[0]).filter(
+        (k) => k !== "id" && k !== "created_at" && k !== "updated_at"
+      );
+      const headerLine = allKeys.map(escapeCsvField).join(",");
+      const dataLines = data.map((row) => {
+        return allKeys
+          .map((k) => escapeCsvField((row as Record<string, unknown>)[k] as string | number | null))
+          .join(",");
+      });
+      const csv = [headerLine, ...dataLines].join("\n");
+      return {
+        success: true,
+        csv,
+        filename: `maestra-export-${new Date().toISOString().slice(0, 10)}.csv`,
+      };
+    }
 
-    return {
-      success: true,
-      csv,
-      filename: `maestra-export-${new Date().toISOString().slice(0, 10)}.csv`,
-    };
+    return { success: true, csv: "", filename: "maestra-export-empty.csv" };
   } catch (error) {
     console.error("Export error:", error);
     return {
@@ -218,8 +250,36 @@ export async function updateMagentoField(
   }
 }
 
-// Export Magento CSV (semicolon-separated)
-export async function exportMagentoCsv(productIds?: number[]): Promise<{
+// Fetch the full Magento export config (list of views)
+export async function fetchMagentoConfig(): Promise<MagentoConfig> {
+  try {
+    return await loadMagentoConfig();
+  } catch {
+    return { views: [] };
+  }
+}
+
+// Save the full Magento export config (list of views)
+export async function updateMagentoConfig(
+  config: MagentoConfig
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    await saveMagentoConfig(config);
+    return { success: true };
+  } catch (error) {
+    console.error("Save magento config error:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to save config",
+    };
+  }
+}
+
+// Export Magento CSV (semicolon-separated) for a given view
+export async function exportMagentoCsv(
+  viewId: string,
+  productIds?: number[]
+): Promise<{
   success: boolean;
   csv?: string;
   filename?: string;
@@ -233,6 +293,12 @@ export async function exportMagentoCsv(productIds?: number[]): Promise<{
     const maestraData = await getMaestraProducts();
     const maestraMap = new Map(maestraData.map((p) => [p.id, p]));
 
+    const config = await loadMagentoConfig();
+    const view = config.views.find((v) => v.id === viewId);
+    if (!view) {
+      return { success: false, error: "Vista no encontrada" };
+    }
+
     // Escape a CSV field for semicolon-separated format
     const escapeCsvField = (val: string | number | null): string => {
       if (val === null || val === undefined) return "";
@@ -243,31 +309,37 @@ export async function exportMagentoCsv(productIds?: number[]): Promise<{
       return str;
     };
 
-    // Header line
-    const headerLine = MAGENTO_CSV_COLUMNS.join(";");
+    const safeName = (view.name || "magento").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "magento";
 
-    // Data lines
+    if (view.columns.length === 0) {
+      return {
+        success: true,
+        csv: "",
+        filename: `${safeName}-export-${new Date().toISOString().slice(0, 10)}.csv`,
+      };
+    }
+
+    const headerLine = view.columns.map((c) => escapeCsvField(c.name)).join(";");
+
     const dataLines = magentoData.map((mg) => {
       const maestra = maestraMap.get(mg.maestra_id);
-      const row: Record<string, string | number | null> = {};
-
-      for (const col of MAGENTO_CSV_COLUMNS) {
-        // Fixed values
-        if (col in MAGENTO_FIXED_VALUES) {
-          row[col] = MAGENTO_FIXED_VALUES[col];
-        }
-        // Mapped from maestra
-        else if (col in MAGENTO_MAESTRA_MAPPED_FIELDS && maestra) {
-          const maestraCol = MAGENTO_MAESTRA_MAPPED_FIELDS[col];
-          row[col] = (maestra as unknown as Record<string, unknown>)[maestraCol] as string | number | null;
-        }
-        // From magento table (AI-generated or user-edited)
-        else {
-          row[col] = ((mg as unknown as Record<string, unknown>)[col] as string | number | null) ?? null;
-        }
-      }
-
-      return MAGENTO_CSV_COLUMNS.map((col) => escapeCsvField(row[col] ?? null)).join(";");
+      return view.columns
+        .map((col) => {
+          if (col.source.type === "fixed") {
+            return escapeCsvField(col.source.value);
+          }
+          if (col.source.type === "maestra") {
+            const v = maestra
+              ? (maestra as unknown as Record<string, unknown>)[col.source.maestraColumn]
+              : null;
+            return escapeCsvField((v ?? null) as string | number | null);
+          }
+          // manual: read from magento_products using the per-view namespaced column name
+          const dbCol = manualDbColumn(view.id, col.id);
+          const v = (mg as unknown as Record<string, unknown>)[dbCol];
+          return escapeCsvField((v ?? null) as string | number | null);
+        })
+        .join(";");
     });
 
     const csv = [headerLine, ...dataLines].join("\n");
@@ -275,7 +347,7 @@ export async function exportMagentoCsv(productIds?: number[]): Promise<{
     return {
       success: true,
       csv,
-      filename: `magento-export-${new Date().toISOString().slice(0, 10)}.csv`,
+      filename: `${safeName}-export-${new Date().toISOString().slice(0, 10)}.csv`,
     };
   } catch (error) {
     console.error("Export magento error:", error);

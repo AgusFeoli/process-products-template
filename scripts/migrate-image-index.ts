@@ -1,10 +1,24 @@
-import { neon } from "@neondatabase/serverless";
+import { Pool } from "pg";
 import * as dotenv from "dotenv";
 
 // Load environment variables
 dotenv.config();
 
-const sql = neon(process.env.DATABASE_URL!);
+const pool = new Pool({ connectionString: process.env.DATABASE_URL! });
+
+async function query(text: string) {
+  const result = await pool.query(text);
+  return result.rows;
+}
+
+async function queryParam(strings: TemplateStringsArray, ...values: unknown[]) {
+  let text = strings[0];
+  for (let i = 0; i < values.length; i++) {
+    text += `$${i + 1}` + strings[i + 1];
+  }
+  const result = await pool.query(text, values);
+  return result.rows;
+}
 
 async function runMigration() {
   console.log("=".repeat(50));
@@ -14,12 +28,12 @@ async function runMigration() {
   try {
     // Step 1: Enable pg_trgm extension for fast ILIKE searches
     console.log("\n1️⃣  Habilitando extensión pg_trgm...");
-    await sql`CREATE EXTENSION IF NOT EXISTS pg_trgm`;
+    await queryParam`CREATE EXTENSION IF NOT EXISTS pg_trgm`;
     console.log("   ✅ pg_trgm habilitado");
 
     // Step 2: Create sftp_images table
     console.log("\n2️⃣  Creando tabla sftp_images...");
-    await sql`
+    await queryParam`
       CREATE TABLE IF NOT EXISTS sftp_images (
         id SERIAL PRIMARY KEY,
         path TEXT NOT NULL UNIQUE,
@@ -35,7 +49,7 @@ async function runMigration() {
 
     // Step 3: Create trigram index for fast ILIKE searches
     console.log("\n3️⃣  Creando índice trigram en name_lower...");
-    await sql`
+    await queryParam`
       CREATE INDEX IF NOT EXISTS idx_sftp_images_name_lower_trgm 
       ON sftp_images USING gin (name_lower gin_trgm_ops)
     `;
@@ -43,7 +57,7 @@ async function runMigration() {
 
     // Step 4: Create regular index on path for lookups
     console.log("\n4️⃣  Creando índice en path...");
-    await sql`
+    await queryParam`
       CREATE INDEX IF NOT EXISTS idx_sftp_images_path 
       ON sftp_images (path)
     `;
@@ -51,7 +65,7 @@ async function runMigration() {
 
     // Step 5: Create product_images table for caching matches
     console.log("\n5️⃣  Creando tabla product_images...");
-    await sql`
+    await queryParam`
       CREATE TABLE IF NOT EXISTS product_images (
         id SERIAL PRIMARY KEY,
         product_id INTEGER NOT NULL,
@@ -68,11 +82,11 @@ async function runMigration() {
 
     // Step 6: Create indexes on product_images
     console.log("\n6️⃣  Creando índices en product_images...");
-    await sql`
+    await queryParam`
       CREATE INDEX IF NOT EXISTS idx_product_images_product_id 
       ON product_images (product_id)
     `;
-    await sql`
+    await queryParam`
       CREATE INDEX IF NOT EXISTS idx_product_images_primary 
       ON product_images (product_id, is_primary) WHERE is_primary = TRUE
     `;
@@ -80,7 +94,7 @@ async function runMigration() {
 
     // Step 7: Create product_ai table for versioning/cache
     console.log("\n7️⃣  Creando tabla product_ai (cache/versionado)...");
-    await sql`
+    await queryParam`
       CREATE TABLE IF NOT EXISTS product_ai (
         id SERIAL PRIMARY KEY,
         product_id INTEGER NOT NULL UNIQUE,
@@ -98,7 +112,7 @@ async function runMigration() {
 
     // Step 8: Create index on product_ai
     console.log("\n8️⃣  Creando índice en product_ai...");
-    await sql`
+    await queryParam`
       CREATE INDEX IF NOT EXISTS idx_product_ai_product_id 
       ON product_ai (product_id)
     `;
@@ -106,7 +120,7 @@ async function runMigration() {
 
     // Step 9: Create ai_prompt_config table for storing AI prompt templates
     console.log("\n9️⃣  Creando tabla ai_prompt_config...");
-    await sql`
+    await queryParam`
       CREATE TABLE IF NOT EXISTS ai_prompt_config (
         id SERIAL PRIMARY KEY,
         prompt_template TEXT NOT NULL,
@@ -119,7 +133,7 @@ async function runMigration() {
     console.log("   ✅ Tabla ai_prompt_config creada");
 
     // Insert default prompt if table is empty
-    const existingPrompt = await sql`
+    const existingPrompt = await queryParam`
       SELECT id FROM ai_prompt_config LIMIT 1
     `;
     if (existingPrompt.length === 0) {
@@ -153,7 +167,7 @@ INSTRUCCIONES:
 **DESCRIPCIÓN:**  
 *(A continuación, redactá la descripción siguiendo todas las instrucciones anteriores. No incluyas títulos ni etiquetas, solo el texto descriptivo en párrafos.)*`;
       
-      await sql`
+      await queryParam`
         INSERT INTO ai_prompt_config (prompt_template, version)
         VALUES (${defaultPrompt}, '1.0')
       `;
@@ -162,7 +176,7 @@ INSTRUCCIONES:
 
     // Verify tables exist
     console.log("\n📊 Verificando tablas creadas...");
-    const tables = await sql`
+    const tables = await queryParam`
       SELECT table_name 
       FROM information_schema.tables 
       WHERE table_schema = 'public' 
@@ -173,7 +187,7 @@ INSTRUCCIONES:
     console.log(`   Tablas encontradas: ${tables.map((t) => (t as { table_name: string }).table_name).join(", ")}`);
 
     // Check if pg_trgm is enabled
-    const extensions = await sql`
+    const extensions = await queryParam`
       SELECT extname FROM pg_extension WHERE extname = 'pg_trgm'
     `;
     console.log(`   Extensión pg_trgm: ${extensions.length > 0 ? "✅ activa" : "❌ no encontrada"}`);
