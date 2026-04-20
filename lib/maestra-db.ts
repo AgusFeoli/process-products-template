@@ -99,14 +99,6 @@ export async function getMaestraProductsByIds(ids: number[]): Promise<MaestraPro
   return rows as unknown as MaestraProduct[];
 }
 
-// Get total count
-export async function getMaestraCount(): Promise<number> {
-  const sql = getSql();
-  await ensureMaestraTable();
-  const result = await sql`SELECT COUNT(*) as count FROM maestra_products`;
-  return Number(result[0].count);
-}
-
 // Insert rows in bulk (dynamic columns from row keys)
 export async function insertMaestraRows(
   rows: Record<string, string | number | null>[],
@@ -254,7 +246,7 @@ export async function initializeMaestraDatabase(): Promise<{
 // Magento Products table
 // ============================================
 
-export async function ensureMagentoTable(): Promise<void> {
+async function ensureMagentoTable(): Promise<void> {
   const sql = getSql();
   await sql`
     CREATE TABLE IF NOT EXISTS magento_products (
@@ -352,90 +344,6 @@ export async function updateMagentoCell(
   await sql(query, [finalValue, now, id]);
 }
 
-// Bulk update AI-generated fields for multiple products (legacy — kept for compatibility)
-export async function bulkUpdateMagentoAiFields(
-  updates: {
-    id: number;
-    name: string | null;
-    url_key: string | null;
-    meta_title: string | null;
-    meta_keywords: string | null;
-    meta_description: string | null;
-    short_description: string | null;
-    long_description: string | null;
-  }[]
-): Promise<number> {
-  if (updates.length === 0) return 0;
-  const sql = getSql();
-  const now = new Date().toISOString();
-  let updated = 0;
-
-  for (const u of updates) {
-    try {
-      await sql`
-        UPDATE magento_products
-        SET name = ${u.name}, url_key = ${u.url_key}, meta_title = ${u.meta_title},
-            meta_keywords = ${u.meta_keywords}, meta_description = ${u.meta_description},
-            short_description = ${u.short_description}, long_description = ${u.long_description},
-            updated_at = ${now}
-        WHERE id = ${u.id}
-      `;
-      updated++;
-    } catch (err) {
-      console.error(`Failed to update magento product ${u.id}:`, err);
-    }
-  }
-
-  return updated;
-}
-
-// Bulk update dynamic columns for multiple products (used by AI generation with user-defined columns)
-export async function bulkUpdateMagentoDynamicFields(
-  updates: Record<string, unknown>[],
-  dbColumns: string[]
-): Promise<number> {
-  if (updates.length === 0 || dbColumns.length === 0) return 0;
-  const sql = getSql();
-  const now = new Date().toISOString();
-  let updated = 0;
-
-  for (const row of updates) {
-    const id = row.id as number;
-    if (!id) continue;
-
-    // Build SET clause dynamically for the specified columns
-    const setClauses: string[] = [];
-    const params: (string | number | null)[] = [];
-    let paramIndex = 1;
-
-    for (const col of dbColumns) {
-      const val = row[col];
-      setClauses.push(`"${col}" = $${paramIndex}`);
-      params.push(val != null ? String(val) : null);
-      paramIndex++;
-    }
-
-    // Add updated_at
-    setClauses.push(`"updated_at" = $${paramIndex}`);
-    params.push(now);
-    paramIndex++;
-
-    // Add id for WHERE clause
-    params.push(id);
-
-    const query = `UPDATE magento_products SET ${setClauses.join(", ")} WHERE id = $${paramIndex}`;
-
-    try {
-      await sql(query, params);
-      updated++;
-    } catch (err) {
-      console.error(`Failed to update magento product ${id}:`, err);
-    }
-  }
-
-  return updated;
-}
-
 /**
  * Update magento dynamic fields using _row_id (the DB id as a string).
  * The id is passed as a string through the AI round-trip to avoid BigInt
@@ -485,14 +393,6 @@ export async function bulkUpdateMagentoDynamicFieldsByRowId(
   }
 
   return updated;
-}
-
-// Get magento count
-export async function getMagentoCount(): Promise<number> {
-  const sql = getSql();
-  await ensureMagentoTable();
-  const result = await sql`SELECT COUNT(*) as count FROM magento_products`;
-  return Number(result[0].count);
 }
 
 // ============================================
@@ -572,22 +472,6 @@ export async function saveMagentoConfig(config: MagentoConfig): Promise<void> {
     VALUES ('magento_config', ${value}, ${now})
     ON CONFLICT (key) DO UPDATE SET value = ${value}, updated_at = ${now}
   `;
-}
-
-/** Ensure DB columns for the given view's manual columns exist. */
-export async function ensureMagentoManualColumnsForView(view: MagentoViewConfig): Promise<void> {
-  const sql = getSql();
-  await ensureMagentoTable();
-  for (const col of view.columns) {
-    if (col.source.type === "manual") {
-      const dbCol = manualDbColumn(view.id, col.id);
-      try {
-        await sql(`ALTER TABLE magento_products ADD COLUMN IF NOT EXISTS "${dbCol}" TEXT`);
-      } catch {
-        // ignore
-      }
-    }
-  }
 }
 
 // ============================================
@@ -692,13 +576,6 @@ export async function insertKeywords(
   return { inserted, errors };
 }
 
-export async function getKeywords(): Promise<SeoKeyword[]> {
-  const sql = getSql();
-  await ensureKeywordsTable();
-  const rows = await sql`SELECT * FROM seo_keywords ORDER BY search_volume DESC NULLS LAST, id`;
-  return rows as unknown as SeoKeyword[];
-}
-
 export async function getKeywordCount(): Promise<number> {
   const sql = getSql();
   await ensureKeywordsTable();
@@ -724,7 +601,7 @@ export async function getTopKeywordsForContext(limit: number = 100): Promise<Seo
 // System Prompt settings
 // ============================================
 
-export async function ensureSettingsTable(): Promise<void> {
+async function ensureSettingsTable(): Promise<void> {
   const sql = getSql();
   await sql`
     CREATE TABLE IF NOT EXISTS app_settings (
@@ -866,7 +743,7 @@ export interface AiJob {
   batch_metrics: string | null;
 }
 
-export async function ensureAiJobsTable(): Promise<void> {
+async function ensureAiJobsTable(): Promise<void> {
   const sql = getSql();
   await sql`
     CREATE TABLE IF NOT EXISTS ai_jobs (
@@ -883,17 +760,11 @@ export async function ensureAiJobsTable(): Promise<void> {
     )
   `;
   // Add batch_metrics column if it doesn't exist (for existing tables)
-  await sql`
-    DO $$
-    BEGIN
-      IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'ai_jobs' AND column_name = 'batch_metrics'
-      ) THEN
-        ALTER TABLE ai_jobs ADD COLUMN batch_metrics TEXT;
-      END IF;
-    END $$;
-  `;
+  try {
+    await sql`ALTER TABLE ai_jobs ADD COLUMN IF NOT EXISTS batch_metrics TEXT`;
+  } catch {
+    // Column already exists, ignore
+  }
 }
 
 export async function createAiJob(id: string, totalProducts: number): Promise<AiJob> {

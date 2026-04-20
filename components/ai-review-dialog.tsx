@@ -12,327 +12,236 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Search,
   X,
-  CheckSquare,
-  Square,
-  ArrowRight,
   Sparkles,
-  Ban,
   Loader2,
-  ImageOff,
   ChevronDown,
   ChevronUp,
-  Pencil,
-  Save,
-  Image,
-  RefreshCw,
+  Check,
+  XCircle,
+  CheckCheck,
+  Ban,
 } from "lucide-react";
 
-// Types matching the API
-export interface PendingChange {
-  id: number;
-  modelo: string;
-  proveedor: string;
-  descripcion: string;
-  oldDescripcionEshop: string | null;
-  newDescripcionEshop: string;
-  oldImagen: string | null;
-  newImagen: string | null;
-  hasImage: boolean;
-  productUpdatedAt: string | null;
-  primaryImagePath: string | null;
-  imageModifyTime: string | null;
-  allImagesJson: string | null;
+/** A single field change: old value vs AI-generated new value */
+export interface FieldChange {
+  oldValue: string | null;
+  newValue: string;
 }
 
-export interface SkippedProduct {
-  id: number;
-  modelo: string;
-  proveedor: string;
-  descripcion: string;
-  descripcionEshop?: string | null;
+/** One product's AI-generated changes */
+export interface AiProductChange {
+  _row_id: string;
+  sku: string;
+  item_description: string;
+  fields: Record<string, FieldChange>;
+}
+
+/** Column metadata */
+export interface AiColumnDef {
+  dbColumn: string;
+  name: string;
 }
 
 interface AIReviewDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  pendingChanges: PendingChange[];
-  skippedProducts: SkippedProduct[];
-  skippedNoImageProducts?: SkippedProduct[];
-  onConfirm: (selectedIds: number[], editedDescriptions?: Record<number, string>) => Promise<void>;
+  changes: AiProductChange[];
+  columns: AiColumnDef[];
+  onConfirm: (
+    approvedChanges: {
+      _row_id: string;
+      fields: Record<string, string>;
+    }[],
+    dbColumns: string[]
+  ) => Promise<void>;
   onDiscard: () => void;
-  onSaveDescriptions?: (descriptions: Record<number, string>) => Promise<void>;
 }
 
-type TabKey = "ai-generated" | "edited" | "no-image" | "skipped";
+/**
+ * Unique key for a specific field on a specific product.
+ * Used to track which individual field changes are accepted.
+ */
+function fieldKey(rowId: string, dbColumn: string) {
+  return `${rowId}::${dbColumn}`;
+}
 
 export function AIReviewDialog({
   open,
   onOpenChange,
-  pendingChanges,
-  skippedProducts,
-  skippedNoImageProducts = [],
+  changes,
+  columns,
   onConfirm,
   onDiscard,
-  onSaveDescriptions,
 }: AIReviewDialogProps) {
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(
-    () => new Set(pendingChanges.map((c) => c.id))
-  );
+  // Track which individual field changes are accepted (all accepted by default)
+  const [acceptedFields, setAcceptedFields] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
-  const [proveedorFilter, setProveedorFilter] = useState("__all__");
-  const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
+  const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
   const [isApplying, setIsApplying] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
-  const [activeTab, setActiveTab] = useState<TabKey>("ai-generated");
 
-  // Track edited descriptions: productId -> edited text
-  const [editedDescriptions, setEditedDescriptions] = useState<Record<number, string>>({});
-  // Track which items are in edit mode
-  const [editingIds, setEditingIds] = useState<Set<number>>(new Set());
+  // Column name lookup
+  const columnNameMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const col of columns) {
+      map.set(col.dbColumn, col.name);
+    }
+    return map;
+  }, [columns]);
 
-  // ---- Categorize products into tabs ----
-  // AI Generated: new descriptions WITH image (no old description)
-  const aiGenerated = useMemo(
-    () => pendingChanges.filter((c) => c.hasImage && !c.oldDescripcionEshop?.trim()),
-    [pendingChanges]
-  );
-
-  // Edited/Updated: products that HAD an existing description
-  const editedProducts = useMemo(
-    () => pendingChanges.filter((c) => !!c.oldDescripcionEshop?.trim()),
-    [pendingChanges]
-  );
-
-  // No Image: products skipped because no image was found on SFTP
-  const noImageProducts = skippedNoImageProducts;
-
-  // Counts
-  const hasAiGenerated = aiGenerated.length > 0;
-  const hasEdited = editedProducts.length > 0;
-  const hasNoImage = noImageProducts.length > 0;
-  const hasSkipped = skippedProducts.length > 0;
-  const hasAnyChanges = pendingChanges.length > 0;
-
-  // Reset selections when dialog opens with new data
+  // Initialize: accept all fields by default when dialog opens
   const prevOpenRef = useRef(false);
   useEffect(() => {
     if (open && !prevOpenRef.current) {
-      setSelectedIds(new Set(pendingChanges.map((c) => c.id)));
+      const allKeys = new Set<string>();
+      for (const change of changes) {
+        for (const col of Object.keys(change.fields)) {
+          allKeys.add(fieldKey(change._row_id, col));
+        }
+      }
+      setAcceptedFields(allKeys);
       setSearchQuery("");
-      setProveedorFilter("__all__");
-      setExpandedIds(new Set());
-      setEditedDescriptions({});
-      setEditingIds(new Set());
-      // Set active tab to first non-empty tab
-      if (hasAiGenerated) setActiveTab("ai-generated");
-      else if (hasEdited) setActiveTab("edited");
-      else if (hasNoImage) setActiveTab("no-image");
-      else if (hasSkipped) setActiveTab("skipped");
+      // Expand all products by default so all changes are visible
+      setExpandedRows(new Set(changes.map((c) => c._row_id)));
     }
     prevOpenRef.current = open;
-  }, [open, pendingChanges, hasAiGenerated, hasEdited, hasNoImage, hasSkipped]);
+  }, [open, changes]);
 
-  // Get current tab's items for filtering (only for PendingChange tabs)
-  const currentTabItems = useMemo(() => {
-    switch (activeTab) {
-      case "ai-generated": return aiGenerated;
-      case "edited": return editedProducts;
-      default: return [];
+  // Filter products by search
+  const filteredChanges = useMemo(() => {
+    if (!searchQuery.trim()) return changes;
+    const q = searchQuery.toLowerCase().trim();
+    return changes.filter(
+      (c) =>
+        (c.sku || "").toLowerCase().includes(q) ||
+        (c.item_description || "").toLowerCase().includes(q) ||
+        c._row_id.includes(q)
+    );
+  }, [changes, searchQuery]);
+
+  // Count stats
+  const totalFields = useMemo(() => {
+    let count = 0;
+    for (const c of changes) {
+      count += Object.keys(c.fields).length;
     }
-  }, [activeTab, aiGenerated, editedProducts]);
+    return count;
+  }, [changes]);
 
-  // Get unique providers across all changes
-  const uniqueProveedores = useMemo(() => {
-    const set = new Set<string>();
-    for (const change of pendingChanges) {
-      if (change.proveedor?.trim()) set.add(change.proveedor.trim());
+  const acceptedCount = acceptedFields.size;
+
+  // Per-product acceptance counts
+  const getProductAcceptedCount = (change: AiProductChange) => {
+    let count = 0;
+    for (const col of Object.keys(change.fields)) {
+      if (acceptedFields.has(fieldKey(change._row_id, col))) count++;
     }
-    for (const p of skippedProducts) {
-      if (p.proveedor?.trim()) set.add(p.proveedor.trim());
-    }
-    for (const p of noImageProducts) {
-      if (p.proveedor?.trim()) set.add(p.proveedor.trim());
-    }
-    return Array.from(set).sort((a, b) => a.localeCompare(b));
-  }, [pendingChanges, skippedProducts]);
+    return count;
+  };
 
-  // Filter items (for pending change tabs)
-  const filteredItems = useMemo(() => {
-    let items = currentTabItems;
+  const getProductTotalFields = (change: AiProductChange) =>
+    Object.keys(change.fields).length;
 
-    if (proveedorFilter && proveedorFilter !== "__all__") {
-      items = items.filter(
-        (c) => c.proveedor.trim().toLowerCase() === proveedorFilter.toLowerCase()
-      );
-    }
+  // Check if an entire product is fully accepted
+  const isProductFullyAccepted = (change: AiProductChange) =>
+    getProductAcceptedCount(change) === getProductTotalFields(change);
 
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase().trim();
-      items = items.filter(
-        (c) =>
-          c.modelo.toLowerCase().includes(q) ||
-          c.proveedor.toLowerCase().includes(q) ||
-          c.descripcion.toLowerCase().includes(q) ||
-          c.newDescripcionEshop.toLowerCase().includes(q) ||
-          String(c.id).includes(q)
-      );
-    }
+  // Check if an entire product has no accepted fields
+  const isProductFullyRejected = (change: AiProductChange) =>
+    getProductAcceptedCount(change) === 0;
 
-    return items;
-  }, [currentTabItems, proveedorFilter, searchQuery]);
-
-  // Filter skipped products
-  const filteredSkipped = useMemo(() => {
-    let items = skippedProducts;
-
-    if (proveedorFilter && proveedorFilter !== "__all__") {
-      items = items.filter(
-        (p) => p.proveedor.trim().toLowerCase() === proveedorFilter.toLowerCase()
-      );
-    }
-
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase().trim();
-      items = items.filter(
-        (p) =>
-          p.modelo.toLowerCase().includes(q) ||
-          p.proveedor.toLowerCase().includes(q) ||
-          p.descripcion.toLowerCase().includes(q) ||
-          String(p.id).includes(q)
-      );
-    }
-
-    return items;
-  }, [skippedProducts, proveedorFilter, searchQuery]);
-
-  // Filter no-image products
-  const filteredNoImage = useMemo(() => {
-    let items = noImageProducts;
-
-    if (proveedorFilter && proveedorFilter !== "__all__") {
-      items = items.filter(
-        (p) => p.proveedor.trim().toLowerCase() === proveedorFilter.toLowerCase()
-      );
-    }
-
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase().trim();
-      items = items.filter(
-        (p) =>
-          p.modelo.toLowerCase().includes(q) ||
-          p.proveedor.toLowerCase().includes(q) ||
-          p.descripcion.toLowerCase().includes(q) ||
-          String(p.id).includes(q)
-      );
-    }
-
-    return items;
-  }, [noImageProducts, proveedorFilter, searchQuery]);
-
-  // Count selected in current view
-  const selectedInView = useMemo(
-    () => filteredItems.filter((c) => selectedIds.has(c.id)).length,
-    [filteredItems, selectedIds]
-  );
-
-  const toggleSelect = (id: number) => {
-    setSelectedIds((prev) => {
+  // Toggle a single field
+  const toggleField = (rowId: string, dbColumn: string) => {
+    const key = fieldKey(rowId, dbColumn);
+    setAcceptedFields((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   };
 
-  const selectAll = () => {
-    setSelectedIds((prev) => {
+  // Accept all fields for a product
+  const acceptProduct = (change: AiProductChange) => {
+    setAcceptedFields((prev) => {
       const next = new Set(prev);
-      for (const c of filteredItems) next.add(c.id);
+      for (const col of Object.keys(change.fields)) {
+        next.add(fieldKey(change._row_id, col));
+      }
       return next;
     });
   };
 
-  const deselectAll = () => {
-    setSelectedIds((prev) => {
+  // Reject all fields for a product
+  const rejectProduct = (change: AiProductChange) => {
+    setAcceptedFields((prev) => {
       const next = new Set(prev);
-      for (const c of filteredItems) next.delete(c.id);
+      for (const col of Object.keys(change.fields)) {
+        next.delete(fieldKey(change._row_id, col));
+      }
       return next;
     });
   };
 
-  const toggleExpanded = (id: number) => {
-    setExpandedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  // Description editing
-  const startEditing = (id: number, currentDescription: string) => {
-    setEditingIds((prev) => new Set(prev).add(id));
-    if (!(id in editedDescriptions)) {
-      setEditedDescriptions((prev) => ({ ...prev, [id]: currentDescription }));
+  // Accept all fields for all products
+  const acceptAll = () => {
+    const allKeys = new Set<string>();
+    for (const change of changes) {
+      for (const col of Object.keys(change.fields)) {
+        allKeys.add(fieldKey(change._row_id, col));
+      }
     }
+    setAcceptedFields(allKeys);
   };
 
-  const stopEditing = (id: number) => {
-    setEditingIds((prev) => {
+  // Reject all fields for all products
+  const rejectAll = () => {
+    setAcceptedFields(new Set());
+  };
+
+  // Toggle expand/collapse a product row
+  const toggleExpanded = (rowId: string) => {
+    setExpandedRows((prev) => {
       const next = new Set(prev);
-      next.delete(id);
+      if (next.has(rowId)) next.delete(rowId);
+      else next.add(rowId);
       return next;
     });
   };
 
-  const updateDescription = (id: number, text: string) => {
-    setEditedDescriptions((prev) => ({ ...prev, [id]: text }));
-  };
-
-  // For skipped products description editing
-  const startEditingSkipped = (id: number, currentDescription: string) => {
-    setEditingIds((prev) => new Set(prev).add(id));
-    if (!(id in editedDescriptions)) {
-      setEditedDescriptions((prev) => ({
-        ...prev,
-        [id]: currentDescription,
-      }));
-    }
-  };
-
-  const hasUnsavedEdits = Object.keys(editedDescriptions).length > 0;
-
+  // Handle confirm: build the approved changes and send them
   const handleConfirm = async () => {
     setIsApplying(true);
     try {
-      await onConfirm(Array.from(selectedIds), editedDescriptions);
+      // Build approved changes: only include products with at least one accepted field
+      const approved: { _row_id: string; fields: Record<string, string> }[] = [];
+      const usedColumns = new Set<string>();
+
+      for (const change of changes) {
+        const fields: Record<string, string> = {};
+        for (const [col, fieldChange] of Object.entries(change.fields)) {
+          if (acceptedFields.has(fieldKey(change._row_id, col))) {
+            fields[col] = fieldChange.newValue;
+            usedColumns.add(col);
+          }
+        }
+        if (Object.keys(fields).length > 0) {
+          approved.push({ _row_id: change._row_id, fields });
+        }
+      }
+
+      if (approved.length === 0) {
+        onDiscard();
+        onOpenChange(false);
+        return;
+      }
+
+      await onConfirm(approved, Array.from(usedColumns));
     } finally {
       setIsApplying(false);
-    }
-  };
-
-  const handleSave = async () => {
-    if (!onSaveDescriptions || !hasUnsavedEdits) return;
-    setIsSaving(true);
-    try {
-      await onSaveDescriptions(editedDescriptions);
-      setEditedDescriptions({});
-      setEditingIds(new Set());
-    } finally {
-      setIsSaving(false);
     }
   };
 
@@ -341,359 +250,156 @@ export function AIReviewDialog({
     onOpenChange(false);
   };
 
-  // Determine the effective description for a pending change
-  const getEffectiveDescription = (change: PendingChange) => {
-    if (change.id in editedDescriptions) return editedDescriptions[change.id];
-    return change.newDescripcionEshop;
-  };
-
-  // Determine effective description for a skipped product
-  const getEffectiveSkippedDescription = (product: SkippedProduct) => {
-    if (product.id in editedDescriptions) return editedDescriptions[product.id];
-    return product.descripcionEshop || product.descripcion || "";
-  };
-
   return (
     <Dialog
       open={open}
       onOpenChange={(isOpen) => {
-        if (!isOpen && !isApplying && !isSaving) {
+        if (!isOpen && !isApplying) {
           onOpenChange(false);
         }
       }}
     >
-      <DialogContent className="sm:max-w-5xl max-h-[90vh] flex flex-col p-0 gap-0 overflow-hidden">
+      <DialogContent className="sm:max-w-6xl max-h-[90vh] flex flex-col p-0 gap-0 overflow-hidden">
         <DialogHeader className="px-6 pt-6 pb-4 shrink-0 border-b border-border">
           <DialogTitle className="flex items-center gap-2 text-lg">
             <Sparkles className="h-5 w-5 text-violet-500" />
-            Revisión de productos procesados
+            Revisión de cambios IA
           </DialogTitle>
           <DialogDescription className="text-sm">
-            {hasAnyChanges && (
-              <span>
-                Se procesaron{" "}
-                <strong className="text-foreground">
-                  {pendingChanges.length}
-                </strong>{" "}
-                productos.
-              </span>
-            )}
-            {hasSkipped && (
-              <span>
-                {hasAnyChanges && " "}
-                <strong className="text-orange-600">
-                  {skippedProducts.length}
-                </strong>{" "}
-                omitidos por proveedor.
-              </span>
-            )}
-            {" Revisá, editá y confirmá los cambios que querés aplicar."}
+            Se generaron cambios para{" "}
+            <strong className="text-foreground">{changes.length}</strong>{" "}
+            {changes.length === 1 ? "producto" : "productos"} en{" "}
+            <strong className="text-foreground">{columns.length}</strong>{" "}
+            {columns.length === 1 ? "campo" : "campos"}.{" "}
+            Revisá cada cambio y decidí cuáles aplicar.
           </DialogDescription>
         </DialogHeader>
 
-        {/* Tabs */}
-        <Tabs
-          value={activeTab}
-          onValueChange={(v) => setActiveTab(v as TabKey)}
-          className="flex-1 flex flex-col min-h-0 overflow-hidden"
-        >
-          <div className="px-6 pt-3 shrink-0">
-            <TabsList className="w-full justify-start flex-wrap h-auto gap-1">
-              {hasAiGenerated && (
-                <TabsTrigger value="ai-generated" className="gap-1.5 text-xs">
-                  <Sparkles className="h-3.5 w-3.5" />
-                  Generados por IA
-                  <Badge variant="secondary" className="ml-1 text-xs px-1.5 py-0">
-                    {aiGenerated.length}
-                  </Badge>
-                </TabsTrigger>
-              )}
-              {hasEdited && (
-                <TabsTrigger value="edited" className="gap-1.5 text-xs">
-                  <RefreshCw className="h-3.5 w-3.5" />
-                  Editados
-                  <Badge variant="secondary" className="ml-1 text-xs px-1.5 py-0 text-amber-600">
-                    {editedProducts.length}
-                  </Badge>
-                </TabsTrigger>
-              )}
-              {hasNoImage && (
-                <TabsTrigger value="no-image" className="gap-1.5 text-xs">
-                  <ImageOff className="h-3.5 w-3.5" />
-                  Sin imagen FTP
-                  <Badge variant="outline" className="ml-1 text-xs px-1.5 py-0 text-muted-foreground">
-                    {noImageProducts.length}
-                  </Badge>
-                </TabsTrigger>
-              )}
-              {hasSkipped && (
-                <TabsTrigger value="skipped" className="gap-1.5 text-xs">
-                  <Ban className="h-3.5 w-3.5" />
-                  Omitidos
-                  <Badge
-                    variant="outline"
-                    className="ml-1 text-xs px-1.5 py-0 text-orange-600 border-orange-200"
-                  >
-                    {skippedProducts.length}
-                  </Badge>
-                </TabsTrigger>
-              )}
-            </TabsList>
-          </div>
-
-          {/* Search / Filters bar — shared across tabs */}
-          <div className="flex items-center gap-3 px-6 py-3 shrink-0">
-            <div className="relative flex-1 max-w-sm">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="Buscar por modelo, proveedor, descripción..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-9 h-9 text-sm"
-              />
-              {searchQuery && (
-                <button
-                  onClick={() => setSearchQuery("")}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              )}
-            </div>
-            <Select value={proveedorFilter} onValueChange={setProveedorFilter}>
-              <SelectTrigger className="w-[200px] h-9 text-sm">
-                <SelectValue placeholder="Todos los proveedores" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="__all__">Todos los proveedores</SelectItem>
-                {uniqueProveedores.map((prov) => (
-                  <SelectItem key={prov} value={prov}>
-                    {prov}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {activeTab !== "skipped" && (
-              <div className="flex items-center gap-2 ml-auto">
-                <span className="text-xs text-muted-foreground">
-                  {selectedInView}/{filteredItems.length} sel.
-                </span>
-                <Button variant="outline" size="sm" onClick={selectAll} className="h-8 text-xs">
-                  <CheckSquare className="h-3.5 w-3.5 mr-1" />
-                  Todos
-                </Button>
-                <Button variant="outline" size="sm" onClick={deselectAll} className="h-8 text-xs">
-                  <Square className="h-3.5 w-3.5 mr-1" />
-                  Ninguno
-                </Button>
-              </div>
+        {/* Toolbar */}
+        <div className="flex items-center gap-3 px-6 py-3 shrink-0 border-b border-border/50 bg-muted/30">
+          <div className="relative flex-1 max-w-sm">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Buscar por SKU o descripción..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-9 h-9 text-sm"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery("")}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
             )}
           </div>
 
-          {/* AI Generated Tab */}
-          {hasAiGenerated && (
-            <TabsContent
-              value="ai-generated"
-              className="flex-1 flex flex-col min-h-0 overflow-hidden mt-0 px-6 pb-0"
+          <div className="flex items-center gap-2 ml-auto">
+            <Badge
+              variant="outline"
+              className={`text-xs ${
+                acceptedCount === totalFields
+                  ? "text-emerald-600 border-emerald-200 bg-emerald-50"
+                  : acceptedCount === 0
+                    ? "text-red-600 border-red-200 bg-red-50"
+                    : "text-violet-600 border-violet-200 bg-violet-50"
+              }`}
             >
-              <ChangesList
-                items={filteredItems}
-                selectedIds={selectedIds}
-                expandedIds={expandedIds}
-                editingIds={editingIds}
-                editedDescriptions={editedDescriptions}
-                onToggleSelect={toggleSelect}
-                onToggleExpand={toggleExpanded}
-                onStartEditing={startEditing}
-                onStopEditing={stopEditing}
-                onUpdateDescription={updateDescription}
-                getEffectiveDescription={getEffectiveDescription}
-                emptyMessage="No hay productos generados por IA"
-                hasFilters={!!searchQuery || proveedorFilter !== "__all__"}
-              />
-            </TabsContent>
-          )}
+              {acceptedCount}/{totalFields} campos aceptados
+            </Badge>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={acceptAll}
+              className="h-8 text-xs gap-1.5 border-emerald-200 text-emerald-700 hover:bg-emerald-50"
+            >
+              <CheckCheck className="h-3.5 w-3.5" />
+              Validar todos
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={rejectAll}
+              className="h-8 text-xs gap-1.5 border-red-200 text-red-700 hover:bg-red-50"
+            >
+              <Ban className="h-3.5 w-3.5" />
+              Descartar todos
+            </Button>
+          </div>
+        </div>
 
-          {/* Edited/Updated Tab */}
-          {hasEdited && (
-            <TabsContent
-              value="edited"
-              className="flex-1 flex flex-col min-h-0 overflow-hidden mt-0 px-6 pb-0"
-            >
-              <ChangesList
-                items={filteredItems}
-                selectedIds={selectedIds}
-                expandedIds={expandedIds}
-                editingIds={editingIds}
-                editedDescriptions={editedDescriptions}
-                onToggleSelect={toggleSelect}
-                onToggleExpand={toggleExpanded}
-                onStartEditing={startEditing}
-                onStopEditing={stopEditing}
-                onUpdateDescription={updateDescription}
-                getEffectiveDescription={getEffectiveDescription}
-                emptyMessage="No hay productos editados"
-                hasFilters={!!searchQuery || proveedorFilter !== "__all__"}
-              />
-            </TabsContent>
-          )}
-
-          {/* No Image Tab */}
-          {hasNoImage && (
-            <TabsContent
-              value="no-image"
-              className="flex-1 flex flex-col min-h-0 overflow-hidden mt-0 px-6 pb-0"
-            >
-              <div className="flex-1 min-h-0 -mx-6 px-6 overflow-y-auto">
-                <div className="space-y-2 pb-4">
-                  <p className="text-sm text-muted-foreground mb-3">
-                    Estos productos no pudieron ser procesados por la IA porque no se
-                    encontr&oacute; su imagen en el FTP.
-                  </p>
-                  {filteredNoImage.length === 0 ? (
-                    <div className="flex items-center justify-center py-12 text-muted-foreground text-sm">
-                      {searchQuery || proveedorFilter !== "__all__"
-                        ? "No se encontraron productos con los filtros aplicados"
-                        : "No hay productos sin imagen"}
-                    </div>
-                  ) : (
-                    filteredNoImage.map((product) => (
-                      <SkippedCard
-                        key={product.id}
-                        product={product}
-                        isExpanded={expandedIds.has(product.id)}
-                        isEditing={editingIds.has(product.id)}
-                        editedDescription={editedDescriptions[product.id]}
-                        onToggleExpand={() => toggleExpanded(product.id)}
-                        onStartEditing={() =>
-                          startEditingSkipped(
-                            product.id,
-                            getEffectiveSkippedDescription(product)
-                          )
-                        }
-                        onStopEditing={() => stopEditing(product.id)}
-                        onUpdateDescription={(text) =>
-                          updateDescription(product.id, text)
-                        }
-                        effectiveDescription={getEffectiveSkippedDescription(product)}
-                      />
-                    ))
-                  )}
-                </div>
+        {/* Products list */}
+        <div className="flex-1 min-h-0 overflow-y-auto px-6 py-4">
+          <div className="space-y-3">
+            {filteredChanges.length === 0 ? (
+              <div className="flex items-center justify-center py-16 text-muted-foreground text-sm">
+                {searchQuery
+                  ? "No se encontraron productos con los filtros aplicados"
+                  : "No hay cambios para revisar"}
               </div>
-            </TabsContent>
-          )}
-
-          {/* Skipped Tab */}
-          {hasSkipped && (
-            <TabsContent
-              value="skipped"
-              className="flex-1 flex flex-col min-h-0 overflow-hidden mt-0 px-6 pb-0"
-            >
-              <div className="flex-1 min-h-0 -mx-6 px-6 overflow-y-auto">
-                <div className="space-y-2 pb-4">
-                  <p className="text-sm text-muted-foreground mb-3">
-                    Estos productos fueron omitidos porque su proveedor tiene
-                    &quot;Omitir IA&quot; activado. Podés editar sus descripciones
-                    manualmente.
-                  </p>
-                  {filteredSkipped.length === 0 ? (
-                    <div className="flex items-center justify-center py-12 text-muted-foreground text-sm">
-                      {searchQuery || proveedorFilter !== "__all__"
-                        ? "No se encontraron productos con los filtros aplicados"
-                        : "No hay productos omitidos"}
-                    </div>
-                  ) : (
-                    filteredSkipped.map((product) => (
-                      <SkippedCard
-                        key={product.id}
-                        product={product}
-                        isExpanded={expandedIds.has(product.id)}
-                        isEditing={editingIds.has(product.id)}
-                        editedDescription={editedDescriptions[product.id]}
-                        onToggleExpand={() => toggleExpanded(product.id)}
-                        onStartEditing={() =>
-                          startEditingSkipped(
-                            product.id,
-                            getEffectiveSkippedDescription(product)
-                          )
-                        }
-                        onStopEditing={() => stopEditing(product.id)}
-                        onUpdateDescription={(text) =>
-                          updateDescription(product.id, text)
-                        }
-                        effectiveDescription={getEffectiveSkippedDescription(product)}
-                      />
-                    ))
-                  )}
-                </div>
-              </div>
-            </TabsContent>
-          )}
-        </Tabs>
+            ) : (
+              filteredChanges.map((change) => (
+                <ProductChangeCard
+                  key={change._row_id}
+                  change={change}
+                  columns={columns}
+                  columnNameMap={columnNameMap}
+                  isExpanded={expandedRows.has(change._row_id)}
+                  acceptedFields={acceptedFields}
+                  acceptedCount={getProductAcceptedCount(change)}
+                  totalFields={getProductTotalFields(change)}
+                  isFullyAccepted={isProductFullyAccepted(change)}
+                  isFullyRejected={isProductFullyRejected(change)}
+                  onToggleExpand={() => toggleExpanded(change._row_id)}
+                  onToggleField={(dbCol) => toggleField(change._row_id, dbCol)}
+                  onAcceptAll={() => acceptProduct(change)}
+                  onRejectAll={() => rejectProduct(change)}
+                />
+              ))
+            )}
+          </div>
+        </div>
 
         {/* Footer */}
         <DialogFooter className="px-6 py-4 border-t border-border shrink-0">
           <div className="flex items-center justify-between w-full">
-            <div className="flex items-center gap-3 text-sm text-muted-foreground">
-              {hasAnyChanges && (
-                <span>
-                  <strong className="text-foreground">{selectedIds.size}</strong>{" "}
-                  de {pendingChanges.length} cambios seleccionados
-                </span>
-              )}
-              {hasUnsavedEdits && (
-                <Badge variant="outline" className="text-xs text-amber-600 border-amber-200">
-                  <Pencil className="h-3 w-3 mr-1" />
-                  {Object.keys(editedDescriptions).length} editados
-                </Badge>
-              )}
+            <div className="text-sm text-muted-foreground">
+              <strong className="text-foreground">{acceptedCount}</strong> de{" "}
+              {totalFields} campos aceptados en{" "}
+              <strong className="text-foreground">
+                {changes.filter((c) => getProductAcceptedCount(c) > 0).length}
+              </strong>{" "}
+              productos
             </div>
             <div className="flex items-center gap-3">
-              {hasUnsavedEdits && onSaveDescriptions && (
-                <Button
-                  variant="outline"
-                  onClick={handleSave}
-                  disabled={isSaving || isApplying}
-                  className="border-amber-200 text-amber-700 hover:bg-amber-50"
-                >
-                  {isSaving ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Save className="h-4 w-4" />
-                  )}
-                  <span className="ml-2">Guardar cambios</span>
-                </Button>
-              )}
               <Button
                 variant="outline"
                 onClick={handleDiscard}
-                disabled={isApplying || isSaving}
+                disabled={isApplying}
               >
                 Descartar todo
               </Button>
-              {hasAnyChanges && (
-                <Button
-                  onClick={handleConfirm}
-                  disabled={isApplying || isSaving || selectedIds.size === 0}
-                  className="bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700"
-                >
-                  {isApplying ? (
-                    <>
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      <span className="ml-2">Aplicando...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles className="h-4 w-4" />
-                      <span className="ml-2">
-                        Confirmar {selectedIds.size}{" "}
-                        {selectedIds.size === 1 ? "cambio" : "cambios"}
-                      </span>
-                    </>
-                  )}
-                </Button>
-              )}
+              <Button
+                onClick={handleConfirm}
+                disabled={isApplying || acceptedCount === 0}
+                className="bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700"
+              >
+                {isApplying ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span className="ml-2">Aplicando...</span>
+                  </>
+                ) : (
+                  <>
+                    <Check className="h-4 w-4" />
+                    <span className="ml-2">
+                      Aplicar {acceptedCount}{" "}
+                      {acceptedCount === 1 ? "cambio" : "cambios"}
+                    </span>
+                  </>
+                )}
+              </Button>
             </div>
           </div>
         </DialogFooter>
@@ -702,174 +408,51 @@ export function AIReviewDialog({
   );
 }
 
-// ---- Shared changes list component ----
-function ChangesList({
-  items,
-  selectedIds,
-  expandedIds,
-  editingIds,
-  editedDescriptions,
-  onToggleSelect,
-  onToggleExpand,
-  onStartEditing,
-  onStopEditing,
-  onUpdateDescription,
-  getEffectiveDescription,
-  emptyMessage,
-  hasFilters,
-}: {
-  items: PendingChange[];
-  selectedIds: Set<number>;
-  expandedIds: Set<number>;
-  editingIds: Set<number>;
-  editedDescriptions: Record<number, string>;
-  onToggleSelect: (id: number) => void;
-  onToggleExpand: (id: number) => void;
-  onStartEditing: (id: number, currentDesc: string) => void;
-  onStopEditing: (id: number) => void;
-  onUpdateDescription: (id: number, text: string) => void;
-  getEffectiveDescription: (change: PendingChange) => string;
-  emptyMessage: string;
-  hasFilters: boolean;
-}) {
-  return (
-    <div className="flex-1 min-h-0 -mx-6 px-6 overflow-y-auto">
-      <div className="space-y-2 pb-4">
-        {items.length === 0 ? (
-          <div className="flex items-center justify-center py-12 text-muted-foreground text-sm">
-            {hasFilters
-              ? "No se encontraron productos con los filtros aplicados"
-              : emptyMessage}
-          </div>
-        ) : (
-          items.map((change) => (
-            <ChangeCard
-              key={change.id}
-              change={change}
-              isSelected={selectedIds.has(change.id)}
-              isExpanded={expandedIds.has(change.id)}
-              isEditing={editingIds.has(change.id)}
-              editedDescription={editedDescriptions[change.id]}
-              onToggleSelect={() => onToggleSelect(change.id)}
-              onToggleExpand={() => onToggleExpand(change.id)}
-              onStartEditing={() =>
-                onStartEditing(change.id, getEffectiveDescription(change))
-              }
-              onStopEditing={() => onStopEditing(change.id)}
-              onUpdateDescription={(text) => onUpdateDescription(change.id, text)}
-              effectiveDescription={getEffectiveDescription(change)}
-            />
-          ))
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ---- Individual change card with editable description ----
-function ChangeCard({
+// ---- Product change card ----
+function ProductChangeCard({
   change,
-  isSelected,
+  columns,
+  columnNameMap,
   isExpanded,
-  isEditing,
-  editedDescription,
-  onToggleSelect,
+  acceptedFields,
+  acceptedCount,
+  totalFields,
+  isFullyAccepted,
+  isFullyRejected,
   onToggleExpand,
-  onStartEditing,
-  onStopEditing,
-  onUpdateDescription,
-  effectiveDescription,
+  onToggleField,
+  onAcceptAll,
+  onRejectAll,
 }: {
-  change: PendingChange;
-  isSelected: boolean;
+  change: AiProductChange;
+  columns: AiColumnDef[];
+  columnNameMap: Map<string, string>;
   isExpanded: boolean;
-  isEditing: boolean;
-  editedDescription?: string;
-  onToggleSelect: () => void;
+  acceptedFields: Set<string>;
+  acceptedCount: number;
+  totalFields: number;
+  isFullyAccepted: boolean;
+  isFullyRejected: boolean;
   onToggleExpand: () => void;
-  onStartEditing: () => void;
-  onStopEditing: () => void;
-  onUpdateDescription: (text: string) => void;
-  effectiveDescription: string;
+  onToggleField: (dbColumn: string) => void;
+  onAcceptAll: () => void;
+  onRejectAll: () => void;
 }) {
-  const hasOldDescription =
-    change.oldDescripcionEshop && change.oldDescripcionEshop.trim().length > 0;
-  const wasEdited = editedDescription !== undefined;
-  const truncatedDesc =
-    effectiveDescription.length > 150
-      ? effectiveDescription.slice(0, 150) + "..."
-      : effectiveDescription;
-
-  // Determine the image URL to display
-  const imageUrl = change.primaryImagePath
-    ? `/api/images?path=${encodeURIComponent(change.primaryImagePath)}`
-    : null;
-
   return (
     <div
       className={`border rounded-xl transition-all ${
-        isSelected
-          ? "border-violet-200 bg-violet-50/30 dark:bg-violet-950/10 dark:border-violet-800"
-          : "border-border bg-background hover:bg-muted/30"
+        isFullyRejected
+          ? "border-red-200 bg-red-50/20 opacity-60"
+          : isFullyAccepted
+            ? "border-emerald-200 bg-emerald-50/20"
+            : "border-violet-200 bg-violet-50/10"
       }`}
     >
       {/* Card Header */}
-      <div className="flex items-start gap-3 px-4 py-3">
-        <div className="pt-0.5">
-          <Checkbox
-            checked={isSelected}
-            onCheckedChange={() => onToggleSelect()}
-          />
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-mono text-xs text-muted-foreground">
-              #{change.id}
-            </span>
-            <span className="font-medium text-sm truncate">
-              {change.modelo || "Sin modelo"}
-            </span>
-            <Badge variant="outline" className="text-xs shrink-0">
-              {change.proveedor || "Sin proveedor"}
-            </Badge>
-            {change.hasImage && (
-              <Badge
-                variant="secondary"
-                className="text-xs text-cyan-600 bg-cyan-50 dark:bg-cyan-950/30 shrink-0"
-              >
-                <Image className="h-3 w-3 mr-1" />
-                Con imagen
-              </Badge>
-            )}
-            {hasOldDescription && (
-              <Badge
-                variant="secondary"
-                className="text-xs text-amber-600 bg-amber-50 dark:bg-amber-950/30 shrink-0"
-              >
-                Actualización
-              </Badge>
-            )}
-            {wasEdited && (
-              <Badge
-                variant="secondary"
-                className="text-xs text-blue-600 bg-blue-50 dark:bg-blue-950/30 shrink-0"
-              >
-                <Pencil className="h-3 w-3 mr-1" />
-                Editado
-              </Badge>
-            )}
-          </div>
-
-          {/* Preview / Collapsed view */}
-          {!isExpanded && (
-            <p className="text-sm text-muted-foreground mt-1.5 line-clamp-2">
-              {truncatedDesc}
-            </p>
-          )}
-        </div>
+      <div className="flex items-center gap-3 px-4 py-3">
         <button
           onClick={onToggleExpand}
-          className="text-muted-foreground hover:text-foreground transition-colors shrink-0 p-1"
+          className="text-muted-foreground hover:text-foreground transition-colors shrink-0 p-0.5"
         >
           {isExpanded ? (
             <ChevronUp className="h-4 w-4" />
@@ -877,124 +460,79 @@ function ChangeCard({
             <ChevronDown className="h-4 w-4" />
           )}
         </button>
+
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            {change.sku && (
+              <Badge variant="outline" className="text-xs font-mono">
+                {change.sku}
+              </Badge>
+            )}
+            <span className="text-sm text-foreground truncate">
+              {change.item_description || "Sin descripción"}
+            </span>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          <Badge
+            variant="outline"
+            className={`text-xs ${
+              isFullyAccepted
+                ? "text-emerald-600 border-emerald-200"
+                : isFullyRejected
+                  ? "text-red-600 border-red-200"
+                  : "text-violet-600 border-violet-200"
+            }`}
+          >
+            {acceptedCount}/{totalFields}
+          </Badge>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onAcceptAll}
+            className="h-7 px-2 text-xs text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50"
+            title="Validar todos los campos"
+          >
+            <CheckCheck className="h-3.5 w-3.5" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onRejectAll}
+            className="h-7 px-2 text-xs text-red-600 hover:text-red-700 hover:bg-red-50"
+            title="Descartar todos los campos"
+          >
+            <XCircle className="h-3.5 w-3.5" />
+          </Button>
+        </div>
       </div>
 
-      {/* Expanded Detail - 30/70 layout with image on left */}
+      {/* Expanded: show all field changes */}
       {isExpanded && (
-        <div className="px-4 pb-4 pt-0 border-t border-border/50 mx-4 mt-0 pt-3">
-          <div className="flex gap-4">
-            {/* Left side: Product Image (30%) */}
-            <div className="w-[30%] shrink-0">
-              {imageUrl ? (
-                <div className="aspect-square rounded-lg overflow-hidden bg-muted border border-border">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={imageUrl}
-                    alt={change.modelo || "Producto"}
-                    className="w-full h-full object-cover"
-                    onError={(e) => {
-                      // Hide broken image and show placeholder
-                      const target = e.target as HTMLImageElement;
-                      target.style.display = "none";
-                      target.nextElementSibling?.classList.remove("hidden");
-                    }}
-                  />
-                  <div className="hidden w-full h-full flex items-center justify-center text-muted-foreground">
-                    <ImageOff className="h-8 w-8" />
-                  </div>
-                </div>
-              ) : (
-                <div className="aspect-square rounded-lg bg-muted border border-border flex items-center justify-center text-muted-foreground">
-                  <ImageOff className="h-8 w-8" />
-                </div>
-              )}
-            </div>
+        <div className="border-t border-border/50 mx-4 pb-4 pt-3">
+          <div className="space-y-2">
+            {columns.map((col) => {
+              const fc = change.fields[col.dbColumn];
+              if (!fc) return null;
+              const key = fieldKey(change._row_id, col.dbColumn);
+              const isAccepted = acceptedFields.has(key);
+              const hasOldValue = fc.oldValue !== null && fc.oldValue.trim() !== "";
+              const isChanged = fc.oldValue !== fc.newValue;
 
-            {/* Right side: Content (70%) */}
-            <div className="flex-1 min-w-0 space-y-3">
-              {/* Old description */}
-              {hasOldDescription && (
-                <div>
-                  <div className="flex items-center gap-2 mb-1.5">
-                    <div className="h-2 w-2 rounded-full bg-red-400 shrink-0" />
-                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                      Descripción anterior
-                    </span>
-                  </div>
-                  <div className="text-sm text-muted-foreground bg-red-50/50 dark:bg-red-950/10 border border-red-100 dark:border-red-900/30 rounded-lg px-3 py-2.5 leading-relaxed">
-                    {change.oldDescripcionEshop}
-                  </div>
-                </div>
-              )}
-
-              {hasOldDescription && (
-                <div className="flex justify-center">
-                  <ArrowRight className="h-4 w-4 text-muted-foreground rotate-90" />
-                </div>
-              )}
-
-              {/* New/Editable description */}
-              <div>
-                <div className="flex items-center gap-2 mb-1.5">
-                  <div className="h-2 w-2 rounded-full bg-green-400 shrink-0" />
-                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                    {wasEdited ? "Descripción editada" : "Nueva descripción (IA)"}
-                  </span>
-                  <div className="ml-auto">
-                    {isEditing ? (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 text-xs text-green-600 hover:text-green-700"
-                        onClick={onStopEditing}
-                      >
-                        <CheckSquare className="h-3.5 w-3.5 mr-1" />
-                        Listo
-                      </Button>
-                    ) : (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 text-xs"
-                        onClick={onStartEditing}
-                      >
-                        <Pencil className="h-3.5 w-3.5 mr-1" />
-                        Editar
-                      </Button>
-                    )}
-                  </div>
-                </div>
-                {isEditing ? (
-                  <Textarea
-                    value={editedDescription ?? change.newDescripcionEshop}
-                    onChange={(e) => onUpdateDescription(e.target.value)}
-                    className="min-h-[100px] text-sm leading-relaxed"
-                    placeholder="Escribí la descripción..."
-                  />
-                ) : (
-                  <div
-                    className={`text-sm leading-relaxed rounded-lg px-3 py-2.5 cursor-pointer transition-colors ${
-                      wasEdited
-                        ? "text-foreground bg-blue-50/50 dark:bg-blue-950/10 border border-blue-100 dark:border-blue-900/30"
-                        : "text-foreground bg-green-50/50 dark:bg-green-950/10 border border-green-100 dark:border-green-900/30"
-                    } hover:opacity-80`}
-                    onClick={onStartEditing}
-                    title="Click para editar"
-                  >
-                    {effectiveDescription}
-                  </div>
-                )}
-              </div>
-
-              {/* Product info */}
-              <div className="flex items-center gap-4 text-xs text-muted-foreground pt-1">
-                {change.descripcion && (
-                  <span>
-                    <strong>Producto:</strong> {change.descripcion}
-                  </span>
-                )}
-              </div>
-            </div>
+              return (
+                <FieldChangeRow
+                  key={col.dbColumn}
+                  columnName={columnNameMap.get(col.dbColumn) || col.dbColumn}
+                  oldValue={fc.oldValue}
+                  newValue={fc.newValue}
+                  isAccepted={isAccepted}
+                  hasOldValue={hasOldValue}
+                  isChanged={isChanged}
+                  onToggle={() => onToggleField(col.dbColumn)}
+                />
+              );
+            })}
           </div>
         </div>
       )}
@@ -1002,151 +540,117 @@ function ChangeCard({
   );
 }
 
-// ---- Skipped product card with editable description ----
-function SkippedCard({
-  product,
-  isExpanded,
-  isEditing,
-  editedDescription,
-  onToggleExpand,
-  onStartEditing,
-  onStopEditing,
-  onUpdateDescription,
-  effectiveDescription,
+// ---- Individual field change row ----
+function FieldChangeRow({
+  columnName,
+  oldValue,
+  newValue,
+  isAccepted,
+  hasOldValue,
+  isChanged,
+  onToggle,
 }: {
-  product: SkippedProduct;
-  isExpanded: boolean;
-  isEditing: boolean;
-  editedDescription?: string;
-  onToggleExpand: () => void;
-  onStartEditing: () => void;
-  onStopEditing: () => void;
-  onUpdateDescription: (text: string) => void;
-  effectiveDescription: string;
+  columnName: string;
+  oldValue: string | null;
+  newValue: string;
+  isAccepted: boolean;
+  hasOldValue: boolean;
+  isChanged: boolean;
+  onToggle: () => void;
 }) {
-  const wasEdited = editedDescription !== undefined;
+  const isLongText = newValue.length > 100 || (oldValue && oldValue.length > 100);
 
   return (
-    <div className="border rounded-xl border-border bg-background hover:bg-muted/30 transition-all">
-      <div className="flex items-start gap-3 px-4 py-3">
+    <div
+      className={`rounded-lg border p-3 transition-all ${
+        isAccepted
+          ? "border-emerald-200 bg-emerald-50/30"
+          : "border-red-200 bg-red-50/20 opacity-70"
+      }`}
+    >
+      <div className="flex items-start gap-3">
+        <div className="pt-0.5">
+          <Checkbox
+            checked={isAccepted}
+            onCheckedChange={onToggle}
+          />
+        </div>
+
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-mono text-xs text-muted-foreground">
-              #{product.id}
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+              {columnName}
             </span>
-            <span className="font-medium text-sm truncate">
-              {product.modelo || "Sin modelo"}
-            </span>
-            <Badge
-              variant="outline"
-              className="text-xs text-orange-600 border-orange-200 bg-orange-50 shrink-0"
-            >
-              {product.proveedor}
-            </Badge>
-            <Badge
-              variant="outline"
-              className="text-xs text-orange-500 border-orange-200 shrink-0"
-            >
-              <Ban className="h-3 w-3 mr-1" />
-              Omitido
-            </Badge>
-            {wasEdited && (
-              <Badge
-                variant="secondary"
-                className="text-xs text-blue-600 bg-blue-50 dark:bg-blue-950/30 shrink-0"
-              >
-                <Pencil className="h-3 w-3 mr-1" />
-                Editado
+            {!isChanged && (
+              <Badge variant="outline" className="text-[10px] text-muted-foreground">
+                Sin cambio
               </Badge>
             )}
           </div>
-          {!isExpanded && effectiveDescription && (
-            <p className="text-sm text-muted-foreground mt-1.5 line-clamp-2">
-              {effectiveDescription.length > 150
-                ? effectiveDescription.slice(0, 150) + "..."
-                : effectiveDescription}
-            </p>
-          )}
-        </div>
-        <button
-          onClick={onToggleExpand}
-          className="text-muted-foreground hover:text-foreground transition-colors shrink-0 p-1"
-        >
-          {isExpanded ? (
-            <ChevronUp className="h-4 w-4" />
-          ) : (
-            <ChevronDown className="h-4 w-4" />
-          )}
-        </button>
-      </div>
 
-      {isExpanded && (
-        <div className="px-4 pb-4 pt-0 space-y-3 border-t border-border/50 mx-4 mt-0 pt-3">
-          {/* Product description */}
-          {product.descripcion && (
-            <div className="text-xs text-muted-foreground">
-              <strong>Producto:</strong> {product.descripcion}
-            </div>
-          )}
-
-          {/* Editable description */}
-          <div>
-            <div className="flex items-center gap-2 mb-1.5">
-              <div className="h-2 w-2 rounded-full bg-orange-400 shrink-0" />
-              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                Descripción e-shop
-              </span>
-              <div className="ml-auto">
-                {isEditing ? (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 text-xs text-green-600 hover:text-green-700"
-                    onClick={onStopEditing}
-                  >
-                    <CheckSquare className="h-3.5 w-3.5 mr-1" />
-                    Listo
-                  </Button>
-                ) : (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 text-xs"
-                    onClick={onStartEditing}
-                  >
-                    <Pencil className="h-3.5 w-3.5 mr-1" />
-                    Editar
-                  </Button>
-                )}
-              </div>
-            </div>
-            {isEditing ? (
-              <Textarea
-                value={editedDescription ?? effectiveDescription}
-                onChange={(e) => onUpdateDescription(e.target.value)}
-                className="min-h-[100px] text-sm leading-relaxed"
-                placeholder="Escribí la descripción..."
-              />
-            ) : (
-              <div
-                className={`text-sm leading-relaxed rounded-lg px-3 py-2.5 cursor-pointer transition-colors ${
-                  wasEdited
-                    ? "text-foreground bg-blue-50/50 dark:bg-blue-950/10 border border-blue-100 dark:border-blue-900/30"
-                    : "text-muted-foreground bg-muted/50 border border-border"
-                } hover:opacity-80`}
-                onClick={onStartEditing}
-                title="Click para editar"
-              >
-                {effectiveDescription || (
-                  <span className="italic text-muted-foreground/60">
-                    Sin descripción — click para agregar
+          {isLongText ? (
+            // Long text: stack vertically
+            <div className="space-y-2">
+              {hasOldValue && (
+                <div>
+                  <span className="text-[10px] font-medium text-red-500 uppercase tracking-wide block mb-1">
+                    Anterior
                   </span>
-                )}
+                  <div className="text-sm text-muted-foreground bg-red-50/50 border border-red-100 rounded-md px-3 py-2 leading-relaxed whitespace-pre-wrap break-words">
+                    {oldValue}
+                  </div>
+                </div>
+              )}
+              <div>
+                <span className="text-[10px] font-medium text-emerald-600 uppercase tracking-wide block mb-1">
+                  {hasOldValue ? "Nuevo" : "Generado"}
+                </span>
+                <div
+                  className={`text-sm leading-relaxed rounded-md px-3 py-2 whitespace-pre-wrap break-words ${
+                    isAccepted
+                      ? "text-foreground bg-emerald-50/50 border border-emerald-100"
+                      : "text-muted-foreground bg-muted/50 border border-border line-through"
+                  }`}
+                >
+                  {newValue}
+                </div>
               </div>
-            )}
-          </div>
+            </div>
+          ) : (
+            // Short text: side by side
+            <div className="flex items-start gap-3">
+              {hasOldValue && (
+                <>
+                  <div className="flex-1 min-w-0">
+                    <span className="text-[10px] font-medium text-red-500 uppercase tracking-wide block mb-1">
+                      Anterior
+                    </span>
+                    <div className="text-sm text-muted-foreground bg-red-50/50 border border-red-100 rounded-md px-2.5 py-1.5 truncate">
+                      {oldValue}
+                    </div>
+                  </div>
+                  <span className="text-muted-foreground pt-5 shrink-0">→</span>
+                </>
+              )}
+              <div className="flex-1 min-w-0">
+                <span className="text-[10px] font-medium text-emerald-600 uppercase tracking-wide block mb-1">
+                  {hasOldValue ? "Nuevo" : "Generado"}
+                </span>
+                <div
+                  className={`text-sm rounded-md px-2.5 py-1.5 truncate ${
+                    isAccepted
+                      ? "text-foreground bg-emerald-50/50 border border-emerald-100"
+                      : "text-muted-foreground bg-muted/50 border border-border line-through"
+                  }`}
+                  title={newValue}
+                >
+                  {newValue}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
-      )}
+      </div>
     </div>
   );
 }

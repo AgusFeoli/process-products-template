@@ -14,7 +14,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   checkConnection,
@@ -53,7 +53,6 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
 import {
   Select,
@@ -88,10 +87,14 @@ import {
   ChevronsLeft,
   ChevronsRight,
   Square,
-  Eye,
   Plus,
 } from "lucide-react";
 import { Login } from "@/components/login";
+import {
+  AIReviewDialog,
+  type AiProductChange,
+  type AiColumnDef,
+} from "@/components/ai-review-dialog";
 
 type SortDirection = "asc" | "desc" | null;
 /** Active view id: "maestra" or a magento view id. */
@@ -105,10 +108,6 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isDeletingAll, setIsDeletingAll] = useState(false);
-  const [connectionStatus, setConnectionStatus] = useState<{
-    connected: boolean;
-    tableExists: boolean;
-  } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -152,6 +151,11 @@ export default function Home() {
   const aiPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Guard to ensure completion toast fires exactly once
   const aiCompletedRef = useRef(false);
+
+  // AI review dialog state
+  const [showAiReview, setShowAiReview] = useState(false);
+  const [pendingAiChanges, setPendingAiChanges] = useState<AiProductChange[]>([]);
+  const [pendingAiColumns, setPendingAiColumns] = useState<AiColumnDef[]>([]);
 
   // Keywords state
   const [keywordStatus, setKeywordStatus] = useState<{ loaded: boolean; count: number }>({ loaded: false, count: 0 });
@@ -205,7 +209,7 @@ export default function Home() {
         .map((c) =>
           c.source.type === "manual"
             ? manualDbColumn(activeMagentoView.id, c.id)
-            : `__maestra__:${c.source.maestraColumn}`
+            : `__maestra__:${(c.source as { type: "maestra"; maestraColumn: string }).maestraColumn}`
         );
     }
     // Use dynamic column metadata if available
@@ -422,8 +426,6 @@ export default function Home() {
   useEffect(() => {
     const init = async () => {
       const status = await checkConnection();
-      setConnectionStatus(status);
-
       if (status.connected && status.tableExists) {
         await loadData(false);
       } else {
@@ -864,77 +866,80 @@ export default function Home() {
 
     const count = mode === "selected" ? selectedMagentoRows.size : magentoProducts.length;
 
-    // For small batches (single selection of <=20 products), use direct API call
-    if (mode === "selected" && selectedMagentoRows.size <= 20) {
-      setIsGeneratingAi(true);
-      setAiJobProgress({ processed: 0, total: count, successful: 0, failed: 0 });
-
-      try {
-        const response = await fetch("/api/generate-magento", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            productIds: Array.from(selectedMagentoRows),
-            mode: "selected",
-            columns: manualColumns,
-          }),
-        });
-
-        const data = await response.json();
-
-        if (data.success) {
-          toast.success(data.message);
-          await loadData(false);
-          setSelectedMagentoRows(new Set());
-        } else {
-          toast.error(data.message || "Error al generar con AI");
-        }
-      } catch (err) {
-        toast.error(err instanceof Error ? err.message : "Error al generar con AI");
-      } finally {
-        setIsGeneratingAi(false);
-        setAiJobProgress(null);
-      }
-      return;
-    }
-
-    // For large batches, use background job system
+    // Always use direct API with preview — shows review dialog before applying changes
     setIsGeneratingAi(true);
-    aiCompletedRef.current = false;
     setAiJobProgress({ processed: 0, total: count, successful: 0, failed: 0 });
 
     try {
-      const response = await fetch("/api/ai-jobs/start", {
+      const response = await fetch("/api/generate-magento", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           productIds: mode === "selected" ? Array.from(selectedMagentoRows) : undefined,
           mode,
           columns: manualColumns,
+          preview: true,
         }),
       });
 
       const data = await response.json();
 
-      if (data.success && data.jobId) {
-        setAiJobId(data.jobId);
-        toast.success(`Procesamiento iniciado: ${data.totalProducts} productos`);
-
-        // Start polling for progress every 1.5 seconds for responsive detection
-        stopAiPolling();
-        aiPollingRef.current = setInterval(() => {
-          pollAiJobStatus(data.jobId);
-        }, 1500);
+      if (data.success && data.preview) {
+        // Open review dialog with the changes
+        setPendingAiChanges(data.changes as AiProductChange[]);
+        setPendingAiColumns(data.columns as AiColumnDef[]);
+        setShowAiReview(true);
+        toast.success(`IA generó cambios para ${data.changes.length} productos. Revisá los cambios.`);
+      } else if (data.success) {
+        toast.success(data.message);
+        await loadData(false);
+        setSelectedMagentoRows(new Set());
       } else {
-        toast.error(data.message || "Error al iniciar procesamiento AI");
-        setIsGeneratingAi(false);
-        setAiJobProgress(null);
+        toast.error(data.message || "Error al generar con AI");
       }
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Error al iniciar procesamiento AI");
+      toast.error(err instanceof Error ? err.message : "Error al generar con AI");
+    } finally {
       setIsGeneratingAi(false);
       setAiJobProgress(null);
     }
+  };
+
+  // Handle AI review dialog confirmation — apply approved changes
+  const handleAiReviewConfirm = async (
+    approvedChanges: { _row_id: string; fields: Record<string, string> }[],
+    dbColumns: string[]
+  ) => {
+    try {
+      const response = await fetch("/api/apply-ai-changes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ changes: approvedChanges, dbColumns }),
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        toast.success(data.message);
+        await loadData(false);
+        setSelectedMagentoRows(new Set());
+      } else {
+        toast.error(data.message || "Error al aplicar cambios");
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Error al aplicar cambios");
+    } finally {
+      setShowAiReview(false);
+      setPendingAiChanges([]);
+      setPendingAiColumns([]);
+    }
+  };
+
+  // Handle AI review dialog discard
+  const handleAiReviewDiscard = () => {
+    setPendingAiChanges([]);
+    setPendingAiColumns([]);
+    toast.info("Cambios descartados");
   };
 
   // Reset sort/search when switching views
@@ -1242,6 +1247,16 @@ export default function Home() {
         onDeleteView={handleDeleteView}
       />
 
+      {/* AI Review Dialog */}
+      <AIReviewDialog
+        open={showAiReview}
+        onOpenChange={setShowAiReview}
+        changes={pendingAiChanges}
+        columns={pendingAiColumns}
+        onConfirm={handleAiReviewConfirm}
+        onDiscard={handleAiReviewDiscard}
+      />
+
       {/* Top Bar */}
       <header className="shrink-0 border-b border-border bg-background px-4 py-2">
         <div className="flex items-center justify-between">
@@ -1258,17 +1273,6 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => toast.info("Revisar Maestra: proximamente")}
-              disabled={products.length === 0}
-              className="border-emerald-400/50 text-emerald-700 hover:bg-emerald-50 hover:border-emerald-400"
-            >
-              <Eye className="h-4 w-4" />
-              <span className="ml-2">Revisar Maestra</span>
-            </Button>
-
             <AlertDialog>
               <AlertDialogTrigger asChild>
                 <Button
@@ -1706,21 +1710,17 @@ export default function Home() {
                           onCheckedChange={() => toggleRowSelection(rowId)}
                         />
                       </td>
-                      {visibleColumns.map((colName) => {
-                        const isLongText = false;
-                        return (
+                      {visibleColumns.map((colName) => (
                           <td
                             key={colName}
-                            className={`border-b border-border px-4 py-2 ${isLongText ? "min-w-[300px]" : ""}`}
+                            className="border-b border-border px-4 py-2"
                           >
                             <EditableCell
                               value={row[colName] as string | number | null}
                               onSave={(newValue) => handleCellUpdate(rowId, colName, newValue)}
-                              isLongText={isLongText}
                             />
                           </td>
-                        );
-                      })}
+                      ))}
                       {!isMagentoView && (
                         <td className="border-b border-border px-4 py-2">
                           <Button
@@ -1867,11 +1867,9 @@ export default function Home() {
 function EditableCell({
   value,
   onSave,
-  isLongText = false,
 }: {
   value: string | number | boolean | null;
   onSave: (value: string) => void;
-  isLongText?: boolean;
 }) {
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(String(value ?? ""));
@@ -1889,50 +1887,18 @@ function EditableCell({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (isLongText) {
-      if (e.key === "Escape") {
-        setIsEditing(false);
-        setEditValue(String(value ?? ""));
+    if (e.key === "Enter") {
+      setIsEditing(false);
+      if (editValue !== String(value ?? "")) {
+        onSave(editValue);
       }
-      // Enter creates newlines in textarea, Ctrl+Enter saves
-      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-        setIsEditing(false);
-        if (editValue !== String(value ?? "")) {
-          onSave(editValue);
-        }
-      }
-    } else {
-      if (e.key === "Enter") {
-        setIsEditing(false);
-        if (editValue !== String(value ?? "")) {
-          onSave(editValue);
-        }
-      } else if (e.key === "Escape") {
-        setIsEditing(false);
-        setEditValue(String(value ?? ""));
-      }
+    } else if (e.key === "Escape") {
+      setIsEditing(false);
+      setEditValue(String(value ?? ""));
     }
   };
 
   if (isEditing) {
-    if (isLongText) {
-      return (
-        <div className="relative">
-          <textarea
-            value={editValue}
-            onChange={(e) => setEditValue(e.target.value)}
-            onBlur={handleBlur}
-            onKeyDown={handleKeyDown}
-            autoFocus
-            rows={5}
-            className="w-full min-w-[280px] px-2 py-1 border border-primary rounded bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 resize-y"
-          />
-          <span className="text-[10px] text-muted-foreground absolute bottom-2 right-2">
-            Ctrl+Enter para guardar
-          </span>
-        </div>
-      );
-    }
     return (
       <input
         type="text"
@@ -1943,24 +1909,6 @@ function EditableCell({
         autoFocus
         className="w-full px-2 py-1 border border-primary rounded bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
       />
-    );
-  }
-
-  if (isLongText) {
-    const strVal = String(value ?? "");
-    const preview = strVal.length > 120 ? strVal.slice(0, 120) + "..." : strVal;
-    return (
-      <div
-        onDoubleClick={handleDoubleClick}
-        className="cursor-pointer min-h-6 max-w-[350px] text-xs leading-relaxed"
-        title={strVal}
-      >
-        {value === null || value === undefined || value === "" ? (
-          <span className="text-muted-foreground italic">-</span>
-        ) : (
-          preview
-        )}
-      </div>
     );
   }
 

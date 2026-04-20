@@ -37,7 +37,7 @@ export async function getProveedores(): Promise<Proveedor[]> {
   const result = await sql`
     SELECT id, codigo, nombre, tipo, COALESCE(skip_ai, false) as skip_ai FROM proveedores ORDER BY codigo ASC
   `;
-  return result as Proveedor[];
+  return result as unknown as Proveedor[];
 }
 
 // Get proveedores with skip_ai = true (names list for AI processing)
@@ -79,7 +79,7 @@ export async function insertProveedor(
     ON CONFLICT (codigo) DO UPDATE SET nombre = EXCLUDED.nombre, tipo = EXCLUDED.tipo, skip_ai = EXCLUDED.skip_ai, updated_at = NOW()
     RETURNING id, codigo, nombre, tipo, skip_ai
   `;
-  return result[0] as Proveedor;
+  return result[0] as unknown as Proveedor;
 }
 
 // Insert multiple proveedores (bulk)

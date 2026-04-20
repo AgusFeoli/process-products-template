@@ -38,10 +38,11 @@ function buildDynamicSchema(columns: ColumnDef[]) {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { productIds, mode, columns } = body as {
+    const { productIds, mode, columns, preview } = body as {
       productIds?: number[];
       mode: "selected" | "all";
       columns?: ColumnDef[];
+      preview?: boolean;
     };
 
     if (!columns || columns.length === 0) {
@@ -141,6 +142,7 @@ ${JSON.stringify(keywordsJson, null, 2)}`;
     const BATCH_SIZE = 20;
     let totalUpdated = 0;
     const errors: string[] = [];
+    const allGeneratedProducts: Record<string, unknown>[] = [];
 
     const client = createOpenAI({
       apiKey: process.env.API_KEY,
@@ -150,6 +152,25 @@ ${JSON.stringify(keywordsJson, null, 2)}`;
 
     const modelName = process.env.MODEL_NAME || "gpt-4o-mini";
     const dbColumns = columns.map((c) => c.dbColumn);
+
+    // Build a map of current values for preview diff
+    const currentValuesMap = preview
+      ? new Map(
+          magentoProducts.map((mp) => {
+            const row: Record<string, unknown> = { _row_id: String(mp.id), sku: mp.sku };
+            for (const col of dbColumns) {
+              row[col] = (mp as unknown as Record<string, unknown>)[col] ?? null;
+            }
+            // Include maestra context for display
+            const maestra = maestraMap.get(mp.maestra_id);
+            if (maestra) {
+              row._sku = mp.sku;
+              row._item_description = maestra.item_description || "";
+            }
+            return [String(mp.id), row];
+          })
+        )
+      : null;
 
     for (
       let batchStart = 0;
@@ -178,11 +199,17 @@ Devuelve un objeto JSON con un array "products". Cada elemento debe tener el mis
         });
 
         if (object.products && object.products.length > 0) {
-          const updated = await bulkUpdateMagentoDynamicFieldsByRowId(
-            object.products as Record<string, unknown>[],
-            dbColumns
-          );
-          totalUpdated += updated;
+          if (preview) {
+            allGeneratedProducts.push(
+              ...(object.products as Record<string, unknown>[])
+            );
+          } else {
+            const updated = await bulkUpdateMagentoDynamicFieldsByRowId(
+              object.products as Record<string, unknown>[],
+              dbColumns
+            );
+            totalUpdated += updated;
+          }
         }
       } catch (batchError) {
         const msg =
@@ -194,6 +221,42 @@ Devuelve un objeto JSON con un array "products". Cada elemento debe tener el mis
         );
         console.error("AI batch error:", batchError);
       }
+    }
+
+    // In preview mode, return the changes for review without saving
+    if (preview && currentValuesMap) {
+      const changes = allGeneratedProducts.map((generated) => {
+        const rowId = generated._row_id as string;
+        const current = currentValuesMap.get(rowId) || {};
+        const fields: Record<
+          string,
+          { oldValue: string | null; newValue: string }
+        > = {};
+        for (const col of dbColumns) {
+          fields[col] = {
+            oldValue: current[col] != null ? String(current[col]) : null,
+            newValue: String(generated[col] ?? ""),
+          };
+        }
+        return {
+          _row_id: rowId,
+          sku: current._sku || current.sku || "",
+          item_description: current._item_description || "",
+          fields,
+        };
+      });
+
+      return NextResponse.json({
+        success: true,
+        preview: true,
+        changes,
+        columns: columns.map((c) => ({
+          dbColumn: c.dbColumn,
+          name: c.name,
+        })),
+        total: magentoProducts.length,
+        errors: errors.length > 0 ? errors : undefined,
+      });
     }
 
     return NextResponse.json({

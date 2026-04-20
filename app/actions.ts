@@ -4,7 +4,6 @@ import {
   initializeMaestraDatabase,
   getMaestraProducts,
   getMaestraProductsByIds,
-  getMaestraCount,
   updateMaestraCell,
   deleteMaestraRow,
   deleteAllMaestraRows,
@@ -71,15 +70,6 @@ export async function fetchColumnMeta(): Promise<ColumnMeta[] | null> {
     return await loadMaestraColumnMeta();
   } catch {
     return null;
-  }
-}
-
-// Get row count
-export async function fetchMaestraCount(): Promise<number> {
-  try {
-    return await getMaestraCount();
-  } catch {
-    return 0;
   }
 }
 
