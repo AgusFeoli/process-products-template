@@ -2,10 +2,12 @@ import { NextResponse } from "next/server";
 import * as XLSX from "xlsx";
 import {
   ensureMaestraTable,
+  ensureMaestraColumns,
   insertMaestraRows,
   deleteAllMaestraRows,
-  MAESTRA_COLUMN_MAP,
+  saveMaestraColumnMeta,
 } from "@/lib/maestra-db";
+import { buildColumnMeta } from "@/lib/maestra-columns";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -31,7 +33,7 @@ export async function POST(request: Request) {
       );
     }
 
-    // Ensure table exists
+    // Ensure base table exists
     await ensureMaestraTable();
 
     // Parse Excel
@@ -52,15 +54,29 @@ export async function POST(request: Request) {
       );
     }
 
-    // Parse headers
+    // Parse headers from the first row of the file
     const excelHeaders = (data[0] as (string | number | null)[]).map((h) =>
       String(h ?? "").trim()
     );
 
-    // Map Excel headers to DB columns
-    const dbHeaders = excelHeaders.map((header) => {
-      return MAESTRA_COLUMN_MAP[header] || header.toLowerCase().replace(/\s+/g, "_");
-    });
+    // Build column metadata from the file's headers
+    const columnMeta = buildColumnMeta(excelHeaders);
+
+    if (columnMeta.length === 0) {
+      return NextResponse.json(
+        { success: false, message: "No se encontraron encabezados válidos en el archivo" },
+        { status: 400 }
+      );
+    }
+
+    // Save column metadata so the UI knows the column names
+    await saveMaestraColumnMeta(columnMeta);
+
+    // Ensure all columns exist in the DB table
+    await ensureMaestraColumns(columnMeta);
+
+    // Map DB column names for building row objects
+    const dbHeaders = columnMeta.map((m) => m.dbColumn);
 
     // Parse rows
     const rows: Record<string, string | number | null>[] = [];
@@ -90,7 +106,7 @@ export async function POST(request: Request) {
     }
 
     // Insert rows
-    const result = await insertMaestraRows(rows);
+    const result = await insertMaestraRows(rows, columnMeta);
 
     return NextResponse.json({
       success: true,
@@ -99,6 +115,7 @@ export async function POST(request: Request) {
       total: rows.length,
       errors: result.errors.length > 0 ? result.errors.slice(0, 20) : undefined,
       errorCount: result.errors.length,
+      columnMeta,
     });
   } catch (error) {
     console.error("Upload maestra error:", error);

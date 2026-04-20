@@ -1,13 +1,4 @@
-import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
-
-// Neon serverless SQL client (lazy-initialized to avoid build-time errors)
-let _sql: NeonQueryFunction<false, false> | null = null;
-function getSql() {
-  if (!_sql) {
-    _sql = neon(process.env.DATABASE_URL!);
-  }
-  return _sql;
-}
+import { getSql } from "./pg-client";
 
 // Table configuration - set this to your existing table name
 const TARGET_TABLE = process.env.TARGET_TABLE || "products";

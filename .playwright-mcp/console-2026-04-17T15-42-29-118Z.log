@@ -1,0 +1,51 @@
+[    1023ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://56d4cb36-f042-4959-a368-cae2d4f34be0-256b9c29b808487c-preview.apps.calvincode.net/favicon.ico:0
+[   35175ms] [ERROR] In HTML, %s cannot be a descendant of <%s>.
+This will cause a hydration error.%s <button> button 
+
+  ...
+    <Primitive.div.Slot tabIndex={-1} data-orientation="horizontal" style={{outline:"none"}} ...>
+      <Primitive.div.SlotClone tabIndex={-1} data-orientation="horizontal" style={{outline:"none"}} ...>
+        <Primitive.div role="tablist" aria-orientation="horizontal" data-slot="tabs-list" data-variant="default" ...>
+          <div role="tablist" aria-orientation="horizontal" data-slot="tabs-list" data-variant="default" ...>
+            <TabsTrigger>
+            <TabsTrigger value="view_mo1ra..." className="text-xs px...">
+              <TabsTrigger data-slot="tabs-trigger" className={"focus-vi..."} value="view_mo1ra...">
+                <RovingFocusGroupItem asChild={true} __scopeRovingFocusGroup={{...}} focusable={true} active={false}>
+                  <RovingFocusGroupCollectionItemSlot scope={{...}} id="radix-_r_b_" focusable={true} active={false}>
+                    <RovingFocusGroupCollectionItemSlot.Slot data-radix-collection-item="" ref={function}>
+                      <RovingFocusGroupCollectionItemSlot.SlotClone data-radix-collection-item="" ref={function}>
+                        <Primitive.span tabIndex={-1} data-orientation="horizontal" asChild={true} ref={function} ...>
+                          <Primitive.span.Slot tabIndex={-1} data-orientation="horizontal" ...>
+                            <Primitive.span.SlotClone tabIndex={-1} data-orientation="horizontal" ...>
+                              <Primitive.button type="button" role="tab" aria-selected={false} ...>
+>                               <button
+>                                 type="button"
+>                                 role="tab"
+>                                 aria-selected={false}
+>                                 aria-controls="radix-_r_9_-content-view_mo1raipo_p5efw4"
+>                                 data-state="inactive"
+>                                 data-disabled={undefined}
+>                                 disabled={false}
+>                                 id="radix-_r_9_-trigger-view_mo1raipo_p5efw4"
+>                                 data-slot="tabs-trigger"
+>                                 className={"focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:outl..."}
+>                                 onMouseDown={function}
+>                                 onKeyDown={function}
+>                                 onFocus={function}
+>                                 tabIndex={-1}
+>                                 data-orientation="horizontal"
+>                                 data-radix-collection-item=""
+>                                 ref={function}
+>                               >
+                                  <ShoppingCart>
+>                                 <button
+>                                   type="button"
+>                                   onClick={function onClick}
+>                                   className="opacity-0 group-hover/tab:opacity-100 ml-1 p-0.5 rounded hover:bg-destr..."
+>                                   title="Eliminar Magento 1"
+>                                   aria-label="Eliminar Magento 1"
+>                                 >
+            ...
+ @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56
+[   35176ms] [ERROR] <%s> cannot contain a nested %s.
+See this log for the ancestor stack trace. button <button> @ webpack-internal:///(app-pages-browser)/./node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56

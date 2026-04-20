@@ -1,11 +1,21 @@
-import { neon } from "@neondatabase/serverless";
+import { Pool } from "pg";
 import * as dotenv from "dotenv";
 import { listAllSftpImagesForIndexing, type ImageFile } from "../lib/ftp-service";
 
 // Load environment variables
 dotenv.config();
 
-const sql = neon(process.env.DATABASE_URL!);
+const pool = new Pool({ connectionString: process.env.DATABASE_URL! });
+
+async function sql(strings: TemplateStringsArray, ...values: unknown[]) {
+  let text = strings[0];
+  for (let i = 0; i < values.length; i++) {
+    text += `$${i + 1}` + strings[i + 1];
+  }
+  const result = await pool.query(text, values);
+  return result.rows;
+}
+
 const BATCH_SIZE = 1000; // Insert 1000 images per query
 
 interface IndexStats {

@@ -1,6 +1,6 @@
 import { createOpenAI } from "@ai-sdk/openai";
 import { generateText } from "ai";
-import { neon } from "@neondatabase/serverless";
+import { getSql } from "./pg-client";
 
 // Variable configuration interfaces
 interface ImageInstructionsConfig {
@@ -35,7 +35,7 @@ async function loadVariableConfigs(): Promise<{
       return {};
     }
 
-    const sql = neon(process.env.DATABASE_URL);
+    const sql = getSql();
 
     const result = await sql`
       SELECT

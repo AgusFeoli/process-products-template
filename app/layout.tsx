@@ -9,8 +9,8 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Cannon Home | Maestra de Productos",
-  description: "Gestión de datos maestros de productos - Cannon Home",
+  title: "Template | Maestra de Productos",
+  description: "Gestión de datos maestros de productos - Template",
 };
 
 export default function RootLayout({

@@ -5,7 +5,7 @@ import { z } from "zod";
 import {
   getMagentoProductsByIds,
   getMagentoProducts,
-  bulkUpdateMagentoAiFields,
+  bulkUpdateMagentoDynamicFieldsByRowId,
   getMaestraProducts,
   getTopKeywordsForContext,
   getSystemPrompt,
@@ -24,20 +24,25 @@ import { setActiveEngine, deleteActiveEngine } from "@/lib/active-engines";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const productOutputSchema = z.object({
-  products: z.array(
-    z.object({
-      id: z.number(),
-      name: z.string(),
-      url_key: z.string(),
-      meta_title: z.string(),
-      meta_keywords: z.string(),
-      meta_description: z.string(),
-      short_description: z.string(),
-      long_description: z.string(),
-    })
-  ),
-});
+interface ColumnDef {
+  dbColumn: string;
+  name: string;
+}
+
+function buildDynamicSchema(columns: ColumnDef[]) {
+  const fieldShape: Record<string, z.ZodString> = {};
+  for (const col of columns) {
+    fieldShape[col.dbColumn] = z.string();
+  }
+  return z.object({
+    products: z.array(
+      z.object({
+        _row_id: z.string(),
+        ...fieldShape,
+      })
+    ),
+  });
+}
 
 /** Split an array into chunks of a given size */
 function chunkArray<T>(arr: T[], size: number): T[][] {
@@ -54,7 +59,8 @@ async function processAiJob(
   jobId: string,
   productsForAi: Array<Record<string, string | number>>,
   keywordContext: string,
-  systemPrompt: string
+  systemPrompt: string,
+  columns: ColumnDef[]
 ) {
   const errors: string[] = [];
 
@@ -66,57 +72,44 @@ async function processAiJob(
 
   const modelName = process.env.MODEL_NAME || "gpt-4o-mini";
 
+  // Build dynamic schema and prompt based on the columns
+  const productOutputSchema = buildDynamicSchema(columns);
+  const columnDescriptions = columns.map((c) => `- ${c.dbColumn} (${c.name})`).join("\n");
+  const dbColumns = columns.map((c) => c.dbColumn);
+
   // Split products into batches of 20 — each batch = one AI request
   const PRODUCTS_PER_BATCH = 20;
   const productBatches = chunkArray(productsForAi, PRODUCTS_PER_BATCH);
 
   // Throttled progress updates — avoid flooding the DB
   let lastProgressUpdate = 0;
-  const PROGRESS_UPDATE_INTERVAL_MS = 2_000; // Update DB at most every 2s
+  const PROGRESS_UPDATE_INTERVAL_MS = 2_000;
   let lastCancellationCheck = 0;
-  const CANCELLATION_CHECK_INTERVAL_MS = 5_000; // Check cancellation every 5s
+  const CANCELLATION_CHECK_INTERVAL_MS = 5_000;
 
-  // Track product-level counts (BatchEngine counts batch-items, not individual products)
-  // Each batch-item contains PRODUCTS_PER_BATCH products (except possibly the last batch)
   const totalProducts = productsForAi.length;
   const totalBatchItems = productBatches.length;
 
-  // Configure BatchEngine:
-  // - Each "item" is a batch of 20 products (one AI request)
-  // - Max 5 concurrent batches running simultaneously
-  // - Circuit breaker opens after 5 consecutive failures
-  // - Adaptive throttling triggers at 5% error rate
-  // - Recovery after 10 consecutive successes
   const engine = new BatchEngine<Record<string, string | number>[], number>(
     {
-      // Since each "item" is already a batch of 20 products,
-      // we set batch size to 1 so BatchEngine processes each chunk individually
       minBatchSize: 1,
       maxBatchSize: productBatches.length,
-      // Max 5 concurrent AI requests (5 batches of 20 products)
       maxConcurrentBatches: 5,
       maxConcurrencyPerBatch: 5,
       globalMaxConcurrency: 5,
-      // Circuit breaker: open after 5 consecutive failures, wait 30s before retry
       circuitBreakerThreshold: 5,
       circuitBreakerResetMs: 30_000,
-      // Retry transient errors up to 3 times with exponential backoff
       maxRetries: 3,
       retryBaseDelayMs: 2_000,
       retryMaxDelayMs: 30_000,
-      // Adaptive throttling: reduce concurrency when error rate > 5%
       throttleErrorThreshold: 0.05,
-      // Recover concurrency after 10 consecutive successful batches
       throttleRecoveryStreak: 10,
-      // Small delay between batches to prevent burst pressure
       interBatchDelayMs: 100,
     },
     defaultTransientClassifier,
-    // Progress callback — throttled DB updates
     (progress: BatchProgress) => {
       const now = Date.now();
 
-      // Check cancellation periodically (fire-and-forget)
       if (now - lastCancellationCheck >= CANCELLATION_CHECK_INTERVAL_MS) {
         lastCancellationCheck = now;
         getAiJob(jobId)
@@ -128,15 +121,11 @@ async function processAiJob(
           .catch(() => {});
       }
 
-      // Throttle DB progress writes
       if (now - lastProgressUpdate < PROGRESS_UPDATE_INTERVAL_MS) {
         return;
       }
       lastProgressUpdate = now;
 
-      // Convert batch-item counts → product counts
-      // BatchEngine counts batch-items (each = ~20 products), not individual products.
-      // Scale proportionally: (completedBatchItems / totalBatchItems) * totalProducts
       const completedBatchItems = progress.success + progress.errors;
       const productsProcessed = Math.min(
         totalProducts,
@@ -148,7 +137,6 @@ async function processAiJob(
         : 0;
       const productsFailed = productsProcessed - productsSuccessful;
 
-      // Fire-and-forget DB update
       updateAiJobProgress(jobId, {
         processed_products: productsProcessed,
         successful_products: productsSuccessful,
@@ -166,17 +154,13 @@ async function processAiJob(
     }
   );
 
-  // Store engine reference for cancellation support
   setActiveEngine(jobId, engine);
-
   await updateAiJobProgress(jobId, { status: "processing" });
 
   try {
-    // Process all batches with controlled parallelism
     const results = await engine.process(
       productBatches,
       async (batch, signal) => {
-        // Check abort signal
         if (signal.aborted) {
           throw new Error("Aborted");
         }
@@ -185,20 +169,25 @@ async function processAiJob(
           model: client.chat(modelName),
           schema: productOutputSchema,
           system: systemPrompt,
-          prompt: `Genera los campos SEO para los siguientes productos de Cannon Home.
+          prompt: `Genera los siguientes campos para los productos listados abajo.
 
-Para cada producto, genera todos los campos requeridos según las instrucciones del system prompt:
-- name, url_key, meta_title, meta_keywords, meta_description, short_description, long_description
+## Campos a generar:
+${columnDescriptions}
+
+Para cada producto, genera TODOS los campos listados arriba según las instrucciones del system prompt.
 ${keywordContext}
 
 ## Productos a procesar:
 ${JSON.stringify(batch, null, 2)}
 
-Devuelve un objeto JSON con un array "products". Cada elemento debe tener el mismo "id" del producto de entrada y todos los campos generados.`,
+Devuelve un objeto JSON con un array "products". Cada elemento debe tener el mismo "_row_id" del producto de entrada y todos los campos generados.`,
         });
 
         if (object.products && object.products.length > 0) {
-          const updated = await bulkUpdateMagentoAiFields(object.products);
+          const updated = await bulkUpdateMagentoDynamicFieldsByRowId(
+            object.products as Record<string, unknown>[],
+            dbColumns
+          );
           return updated;
         }
 
@@ -206,7 +195,6 @@ Devuelve un objeto JSON con un array "products". Cada elemento debe tener el mis
       }
     );
 
-    // Aggregate results
     let totalProcessed = 0;
     let totalSuccessful = 0;
     let totalFailed = 0;
@@ -225,7 +213,6 @@ Devuelve un objeto JSON con un array "products". Cada elemento debe tener el mis
       }
     });
 
-    // Check if job was cancelled before setting final status
     try {
       const finalJob = await getAiJob(jobId);
       if (finalJob && finalJob.status === "cancelled") {
@@ -257,7 +244,6 @@ Devuelve un objeto JSON con un array "products". Cada elemento debe tener el mis
   } catch (err) {
     console.error("BatchEngine processing error:", err);
 
-    // Check cancellation before overwriting status
     try {
       const currentJob = await getAiJob(jobId);
       if (currentJob && currentJob.status === "cancelled") {
@@ -281,10 +267,18 @@ Devuelve un objeto JSON con un array "products". Cada elemento debe tener el mis
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { productIds, mode } = body as {
+    const { productIds, mode, columns } = body as {
       productIds?: number[];
       mode: "selected" | "all";
+      columns?: ColumnDef[];
     };
+
+    if (!columns || columns.length === 0) {
+      return NextResponse.json({
+        success: false,
+        message: "No se especificaron columnas para generar",
+      });
+    }
 
     // Get magento products to process
     let magentoProducts;
@@ -343,27 +337,28 @@ export async function POST(request: Request) {
 ${JSON.stringify(keywordsJson, null, 2)}`;
     }
 
-    // Build context for AI with maestra product details
-    const productsForAi = magentoProducts
-      .filter((mp) => mp.id != null)
-      .map((mp) => {
-        const maestra = maestraMap.get(mp.maestra_id);
-        return {
-          id: mp.id as number,
-          sku: mp.sku || "",
-          item_description: maestra?.item_description || "",
-          familia: maestra?.familia || "",
-          sub_familia: maestra?.sub_familia || "",
-          marca: maestra?.marca || "",
-          color: maestra?.color || "",
-          tamano: maestra?.tamano || "",
-          composicion: maestra?.composicion || "",
-          estilo: maestra?.estilo || "",
-          categoria_venta: maestra?.categoria_venta || "",
-          rubro: maestra?.rubro || "",
-          diseno: maestra?.diseno || "",
-        };
-      });
+    // Build context for AI with maestra product details.
+    // Use _row_id (the DB id as a string) as the round-trip identifier to avoid
+    // BigInt precision loss — both id and maestra_id exceed JS Number.MAX_SAFE_INTEGER.
+    // Passing id as a string preserves full precision through AI JSON round-trip.
+    const productsForAi = magentoProducts.map((mp) => {
+      const maestra = maestraMap.get(mp.maestra_id);
+      return {
+        _row_id: String(mp.id),
+        sku: mp.sku || "",
+        item_description: maestra?.item_description || "",
+        familia: maestra?.familia || "",
+        sub_familia: maestra?.sub_familia || "",
+        marca: maestra?.marca || "",
+        color: maestra?.color || "",
+        tamano: maestra?.tamano || "",
+        composicion: maestra?.composicion || "",
+        estilo: maestra?.estilo || "",
+        categoria_venta: maestra?.categoria_venta || "",
+        rubro: maestra?.rubro || "",
+        diseno: maestra?.diseno || "",
+      };
+    });
 
     // Clean up old jobs
     await cleanupOldAiJobs();
@@ -373,8 +368,7 @@ ${JSON.stringify(keywordsJson, null, 2)}`;
     await createAiJob(jobId, productsForAi.length);
 
     // Fire and forget: start background processing
-    // This runs AFTER the response is sent back to the client
-    processAiJob(jobId, productsForAi, keywordContext, systemPrompt).catch(
+    processAiJob(jobId, productsForAi, keywordContext, systemPrompt, columns).catch(
       (err) => {
         console.error("Background AI job failed:", err);
         updateAiJobProgress(jobId, {

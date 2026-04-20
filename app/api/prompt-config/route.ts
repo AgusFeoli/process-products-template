@@ -1,17 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { neon } from "@neondatabase/serverless";
+import { getSql } from "@/lib/pg-client";
 
 // Force dynamic rendering
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-
-// Lazy initialization
-function getSql() {
-  if (!process.env.DATABASE_URL) {
-    throw new Error("DATABASE_URL is not set");
-  }
-  return neon(process.env.DATABASE_URL);
-}
 
 // GET: Retrieve the current prompt template
 export async function GET() {

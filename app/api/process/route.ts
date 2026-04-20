@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { neon } from "@neondatabase/serverless";
+import { getSql } from "@/lib/pg-client";
 import { downloadImageFromSftp } from "@/lib/ftp-service";
 import { resolveProductImages } from "@/lib/image-matcher";
 import { generateProductDescription, type ProductData } from "@/lib/ai-service";
@@ -9,14 +9,6 @@ import { BatchEngine, defaultTransientClassifier, type BatchProgress } from "@/l
 // Force dynamic rendering - don't analyze during build
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-
-// Lazy initialization to avoid issues during build
-function getSql() {
-  if (!process.env.DATABASE_URL) {
-    throw new Error("DATABASE_URL is not set");
-  }
-  return neon(process.env.DATABASE_URL);
-}
 
 const TARGET_TABLE = process.env.TARGET_TABLE || "products";
 const AI_VERSION = "2.0"; // Increment when prompt/model changes
