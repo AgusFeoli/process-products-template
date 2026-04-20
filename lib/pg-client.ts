@@ -40,7 +40,7 @@ function createSqlFunction(): SqlFunction {
 
     // Check if called as tagged template literal
     if (Array.isArray(args[0]) && "raw" in (args[0] as object)) {
-      const strings = args[0] as TemplateStringsArray;
+      const strings = args[0] as unknown as TemplateStringsArray;
       const values = args.slice(1);
 
       // Build parameterized query from template literal
