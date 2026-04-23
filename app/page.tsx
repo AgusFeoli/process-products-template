@@ -31,7 +31,10 @@ import {
   exportMagentoCsv,
   updateMagentoField,
   updateMagentoConfig,
+  deleteMagentoView,
   fetchColumnMeta,
+  fetchIdentifierColumn,
+  updateIdentifierColumn,
   fetchMagentoConfig,
   type MaestraProduct,
   type MagentoProduct,
@@ -122,14 +125,14 @@ export default function Home() {
     total?: number;
   } | null>(null);
   const [showImportConfirm, setShowImportConfirm] = useState(false);
+  const [importMode, setImportMode] = useState<"replace" | "append">("replace");
 
   // Sorting state
   const [sortColumn, setSortColumn] = useState<string | null>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>(null);
 
-  // Search and filter state
+  // Search state
   const [searchQuery, setSearchQuery] = useState("");
-  const [familiaFilter, setFamiliaFilter] = useState<string>("__all__");
 
   // Row selection (works for both views)
   const [selectedMaestraRows, setSelectedMaestraRows] = useState<Set<number>>(new Set());
@@ -170,6 +173,15 @@ export default function Home() {
 
   // Dynamic column metadata (from imported file headers)
   const [columnMeta, setColumnMeta] = useState<ColumnMeta[] | null>(null);
+
+  // Identifier column: the dbColumn chosen by the user to represent each product
+  // in AI preview/diff. null means "use the internal row id".
+  const [identifierColumn, setIdentifierColumn] = useState<string | null>(null);
+
+  // Identifier picker dialog state (shown after a successful upload)
+  const [showIdentifierPicker, setShowIdentifierPicker] = useState(false);
+  const [identifierPickerValue, setIdentifierPickerValue] = useState<string>("__none__");
+  const [isSavingIdentifier, setIsSavingIdentifier] = useState(false);
 
   // Magento configurable export schema (multi-view)
   const [magentoConfig, setMagentoConfig] = useState<MagentoConfig>({ views: [] });
@@ -305,32 +317,9 @@ export default function Home() {
     return products as unknown as Record<string, unknown>[];
   }, [isMagentoView, products, magentoProducts]);
 
-  // Get unique familias for filter (maestra only)
-  const uniqueFamilias = useMemo(() => {
-    const set = new Set<string>();
-    for (const row of products) {
-      const fam = row.familia;
-      if (fam && String(fam).trim()) {
-        set.add(String(fam).trim());
-      }
-    }
-    return Array.from(set).sort((a, b) => a.localeCompare(b));
-  }, [products]);
-
   // Filtered rows
   const filteredRows = useMemo(() => {
     let rows = currentRows;
-
-    if (!isMagentoView) {
-      if (familiaFilter && familiaFilter !== "__all__") {
-        rows = rows.filter(
-          (row) =>
-            String(row.familia || "")
-              .trim()
-              .toLowerCase() === familiaFilter.toLowerCase()
-        );
-      }
-    }
 
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase().trim();
@@ -343,7 +332,7 @@ export default function Home() {
     }
 
     return rows;
-  }, [currentRows, searchQuery, familiaFilter, isMagentoView]);
+  }, [currentRows, searchQuery]);
 
   // Sorted rows
   const sortedRows = useMemo(() => {
@@ -382,22 +371,22 @@ export default function Home() {
     return sortedRows.slice(start, start + pageSize);
   }, [sortedRows, safePage, pageSize]);
 
-  // Reset page when filters/search/sort/view change
+  // Reset page when search/sort/view change
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchQuery, familiaFilter, activeView, sortColumn, sortDirection]);
+  }, [searchQuery, activeView, sortColumn, sortDirection]);
 
   const loadData = useCallback(async (showLoading = true) => {
     if (showLoading) setIsRefreshing(true);
     setError(null);
 
     try {
-      const [maestraResult, magentoResult, kwStatus, colMeta, mgConfig] = await Promise.all([
+      const [maestraResult, kwStatus, colMeta, mgConfig, identifier] = await Promise.all([
         fetchMaestraData(),
-        fetchMagentoData(),
         fetchKeywordStatus(),
         fetchColumnMeta(),
         fetchMagentoConfig(),
+        fetchIdentifierColumn(),
       ]);
 
       if (maestraResult.success && maestraResult.data) {
@@ -406,15 +395,12 @@ export default function Home() {
         setError(maestraResult.error || "Failed to load data");
       }
 
-      if (magentoResult.success && magentoResult.data) {
-        setMagentoProducts(magentoResult.data);
-      }
-
       setKeywordStatus(kwStatus);
       if (colMeta) {
         setColumnMeta(colMeta);
       }
       setMagentoConfig(mgConfig);
+      setIdentifierColumn(identifier);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load data");
     } finally {
@@ -438,8 +424,25 @@ export default function Home() {
     init();
   }, [loadData]);
 
+  // Load magento products when active view changes to a magento view
+  const loadViewProducts = useCallback(async (viewId: string) => {
+    const result = await fetchMagentoData(viewId);
+    if (result.success && result.data) {
+      setMagentoProducts(result.data);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeView !== "maestra" && magentoConfig.views.some((v) => v.id === activeView)) {
+      loadViewProducts(activeView);
+    }
+  }, [activeView, magentoConfig, loadViewProducts]);
+
   const handleRefresh = async () => {
     await loadData();
+    if (activeView !== "maestra") {
+      await loadViewProducts(activeView);
+    }
     toast.success("Datos actualizados");
   };
 
@@ -464,11 +467,13 @@ export default function Home() {
     if (products.length > 0) {
       setShowImportConfirm(true);
     } else {
+      setImportMode("replace");
       fileInputRef.current?.click();
     }
   };
 
-  const handleImportConfirmed = () => {
+  const handleImportConfirmed = (mode: "replace" | "append") => {
+    setImportMode(mode);
     setShowImportConfirm(false);
     fileInputRef.current?.click();
   };
@@ -483,7 +488,7 @@ export default function Home() {
     try {
       const formData = new FormData();
       formData.append("file", file);
-      formData.append("mode", "append");
+      formData.append("mode", importMode);
 
       const response = await fetch("/api/upload-maestra", {
         method: "POST",
@@ -502,6 +507,11 @@ export default function Home() {
           toast.warning(`${data.errorCount} filas tuvieron errores`);
         }
         await loadData();
+        // After a successful import, ask the user to pick the identifier column.
+        // Seed the picker with the currently persisted choice (or "__none__").
+        const currentIdentifier = await fetchIdentifierColumn();
+        setIdentifierPickerValue(currentIdentifier ?? "__none__");
+        setShowIdentifierPicker(true);
       } else {
         toast.error(data.message || "Error al importar");
         setUploadProgress(null);
@@ -515,6 +525,29 @@ export default function Home() {
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
+    }
+  };
+
+  const handleSaveIdentifierColumn = async () => {
+    setIsSavingIdentifier(true);
+    try {
+      const chosen = identifierPickerValue === "__none__" ? null : identifierPickerValue;
+      const result = await updateIdentifierColumn(chosen);
+      if (result.success) {
+        setIdentifierColumn(chosen);
+        setShowIdentifierPicker(false);
+        toast.success(
+          chosen
+            ? "Columna identificadora guardada"
+            : "Se usará el identificador interno"
+        );
+      } else {
+        toast.error(result.error || "Error al guardar");
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Error al guardar");
+    } finally {
+      setIsSavingIdentifier(false);
     }
   };
 
@@ -657,9 +690,9 @@ export default function Home() {
         toast.error("Esta columna viene de la maestra y no se edita aquí");
         return;
       }
-      const result = await updateMagentoField(id, columnName, value);
+      const result = await updateMagentoField(activeMagentoView!.id, id, columnName, value);
       if (result.success) {
-        await loadData(false);
+        await loadViewProducts(activeMagentoView!.id);
         toast.success("Celda actualizada");
       } else {
         toast.error(result.error || "Error al actualizar");
@@ -806,6 +839,10 @@ export default function Home() {
 
           // Reload data once now that processing is finished
           await loadData(false);
+          // Also reload the magento view products
+          if (activeMagentoView) {
+            await loadViewProducts(activeMagentoView.id);
+          }
 
           if (job.status === "completed") {
             const msg = job.failedProducts > 0
@@ -829,7 +866,7 @@ export default function Home() {
         console.error("Error polling AI job status:", err);
       }
     },
-    [loadData, stopAiPolling]
+    [loadData, loadViewProducts, activeMagentoView, stopAiPolling]
   );
 
   // Cleanup polling on unmount
@@ -879,6 +916,7 @@ export default function Home() {
           mode,
           columns: manualColumns,
           preview: true,
+          viewId: activeMagentoView.id,
         }),
       });
 
@@ -892,7 +930,7 @@ export default function Home() {
         toast.success(`IA generó cambios para ${data.changes.length} productos. Revisá los cambios.`);
       } else if (data.success) {
         toast.success(data.message);
-        await loadData(false);
+        await loadViewProducts(activeMagentoView.id);
         setSelectedMagentoRows(new Set());
       } else {
         toast.error(data.message || "Error al generar con AI");
@@ -914,14 +952,14 @@ export default function Home() {
       const response = await fetch("/api/apply-ai-changes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ changes: approvedChanges, dbColumns }),
+        body: JSON.stringify({ changes: approvedChanges, dbColumns, viewId: activeMagentoView?.id }),
       });
 
       const data = await response.json();
 
       if (data.success) {
         toast.success(data.message);
-        await loadData(false);
+        if (activeMagentoView) await loadViewProducts(activeMagentoView.id);
         setSelectedMagentoRows(new Set());
       } else {
         toast.error(data.message || "Error al aplicar cambios");
@@ -989,6 +1027,8 @@ export default function Home() {
           views: magentoConfig.views.filter((v) => v.id !== viewId),
         };
         try {
+          // Drop the view's table first, then save the updated config
+          await deleteMagentoView(viewId);
           const result = await updateMagentoConfig(newConfig);
           if (result.success) {
             setMagentoConfig(newConfig);
@@ -1128,17 +1168,84 @@ export default function Home() {
             <AlertDialogTitle>Importar archivo</AlertDialogTitle>
             <AlertDialogDescription>
               Ya existen {products.length} registros en la base de datos.
-              Los datos del nuevo archivo se agregaran a los existentes.
+              ¿Qué deseas hacer con los datos existentes?
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <AlertDialogFooter>
+          <AlertDialogFooter className="flex-col gap-2 sm:flex-row">
             <AlertDialogCancel>Cancelar</AlertDialogCancel>
-            <AlertDialogAction onClick={handleImportConfirmed}>
-              Continuar
+            <AlertDialogAction
+              onClick={() => handleImportConfirmed("append")}
+              className="bg-secondary text-secondary-foreground hover:bg-secondary/80"
+            >
+              Agregar a los existentes
+            </AlertDialogAction>
+            <AlertDialogAction
+              onClick={() => handleImportConfirmed("replace")}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Reemplazar todo
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Identifier column picker — shown after a successful maestra import */}
+      <Dialog
+        open={showIdentifierPicker}
+        onOpenChange={(open) => {
+          if (!isSavingIdentifier) setShowIdentifierPicker(open);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Columna identificadora</DialogTitle>
+            <DialogDescription>
+              Elegí qué columna de la maestra identificará a cada producto cuando
+              se muestren los cambios generados por la IA. Si no elegís ninguna,
+              se usará el identificador interno.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-2">
+            <Select
+              value={identifierPickerValue}
+              onValueChange={setIdentifierPickerValue}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Elegí una columna" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__none__">
+                  No elegir (usar identificador interno)
+                </SelectItem>
+                {(columnMeta ?? []).map((meta) => (
+                  <SelectItem key={meta.dbColumn} value={meta.dbColumn}>
+                    {meta.excelHeader}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setShowIdentifierPicker(false)}
+              disabled={isSavingIdentifier}
+            >
+              Cancelar
+            </Button>
+            <Button onClick={handleSaveIdentifierColumn} disabled={isSavingIdentifier}>
+              {isSavingIdentifier ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                  Guardando...
+                </>
+              ) : (
+                "Guardar"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Generic confirmation dialog (replaces native browser confirm) */}
       <AlertDialog
@@ -1438,20 +1545,27 @@ export default function Home() {
             )}
           </div>
 
-          {!isMagentoView && (
-            <Select value={familiaFilter} onValueChange={setFamiliaFilter}>
-              <SelectTrigger className="w-[200px] h-8 text-sm">
-                <SelectValue placeholder="Todas las familias" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="__all__">Todas las familias</SelectItem>
-                {uniqueFamilias.map((fam) => (
-                  <SelectItem key={fam} value={fam}>
-                    {fam}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+          {!isMagentoView && products.length > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 text-xs gap-1.5"
+              onClick={() => {
+                setIdentifierPickerValue(identifierColumn ?? "__none__");
+                setShowIdentifierPicker(true);
+              }}
+              title="Elegir la columna que identifica a cada producto en el preview de IA"
+            >
+              <Settings className="h-3.5 w-3.5" />
+              Identificador
+              {identifierColumn && columnMeta ? (
+                <span className="text-muted-foreground">
+                  : {columnMeta.find((c) => c.dbColumn === identifierColumn)?.excelHeader ?? identifierColumn}
+                </span>
+              ) : (
+                <span className="text-muted-foreground">: interno</span>
+              )}
+            </Button>
           )}
 
           {isMagentoView && (
@@ -1543,7 +1657,7 @@ export default function Home() {
             </div>
           )}
 
-          {(searchQuery || familiaFilter !== "__all__") && (
+          {searchQuery && (
             <span className="text-xs text-muted-foreground">
               {sortedRows.length} de {totalRows} registros
             </span>

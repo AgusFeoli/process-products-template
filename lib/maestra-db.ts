@@ -11,6 +11,8 @@ import {
   type MagentoViewConfig,
   DEFAULT_MAGENTO_CONFIG,
   manualDbColumn,
+  legacyManualDbColumn,
+  viewTableName,
 } from "./magento-config";
 
 // Re-export from maestra-columns for server-side convenience
@@ -56,6 +58,40 @@ export async function loadMaestraColumnMeta(): Promise<ColumnMeta[] | null> {
   }
 }
 
+/**
+ * Save the chosen identifier column (dbColumn name) to app_settings.
+ * Passing null clears the setting, which means the internal id will be used.
+ */
+export async function saveMaestraIdentifierColumn(dbColumn: string | null): Promise<void> {
+  const sql = getSql();
+  await ensureSettingsTable();
+  const now = new Date().toISOString();
+  if (dbColumn === null) {
+    await sql`DELETE FROM app_settings WHERE key = 'maestra_identifier_column'`;
+    return;
+  }
+  await sql`
+    INSERT INTO app_settings (key, value, updated_at)
+    VALUES ('maestra_identifier_column', ${dbColumn}, ${now})
+    ON CONFLICT (key) DO UPDATE SET value = ${dbColumn}, updated_at = ${now}
+  `;
+}
+
+/**
+ * Load the chosen identifier column (dbColumn name) from app_settings.
+ * Returns null when the user explicitly chose "none" or never picked one —
+ * callers should fall back to the internal row id in that case.
+ */
+export async function loadMaestraIdentifierColumn(): Promise<string | null> {
+  const sql = getSql();
+  await ensureSettingsTable();
+  const rows = await sql`SELECT value FROM app_settings WHERE key = 'maestra_identifier_column'`;
+  if (rows.length === 0) return null;
+  const value = rows[0].value;
+  if (typeof value !== "string" || value.trim() === "") return null;
+  return value;
+}
+
 // Create or ensure the maestra table exists with base columns (id, created_at, updated_at).
 // Data columns are added dynamically when importing.
 export async function ensureMaestraTable(): Promise<void> {
@@ -76,8 +112,15 @@ export async function ensureMaestraColumns(meta: ColumnMeta[]): Promise<void> {
   for (const col of meta) {
     try {
       await sql(`ALTER TABLE ${MAESTRA_TABLE} ADD COLUMN IF NOT EXISTS "${col.dbColumn}" TEXT`);
-    } catch {
-      // Column already exists or other non-critical error
+    } catch (err) {
+      // Only ignore "column already exists" type errors; propagate anything else
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("already exists")) {
+        // Column already exists — safe to ignore
+      } else {
+        console.error(`Failed to add column "${col.dbColumn}" to ${MAESTRA_TABLE}:`, err);
+        throw err;
+      }
     }
   }
 }
@@ -224,6 +267,33 @@ export async function deleteAllMaestraRows(): Promise<{ deletedCount: number }> 
   return { deletedCount: count };
 }
 
+/**
+ * Drop and recreate the maestra table from scratch.
+ * This removes ALL data AND all dynamic columns (ghost columns from previous imports).
+ * Also cleans up all per-view magento tables.
+ */
+export async function recreateMaestraTable(): Promise<void> {
+  const sql = getSql();
+  // Drop all per-view magento tables
+  try {
+    const config = await loadMagentoConfig();
+    for (const view of config.views) {
+      const tbl = viewTableName(view.id);
+      await sql(`DROP TABLE IF EXISTS "${tbl}"`);
+    }
+  } catch {
+    // config may not exist yet — safe to ignore
+  }
+  // Also drop the legacy shared table if it still exists
+  try {
+    await sql`DROP TABLE IF EXISTS magento_products`;
+  } catch {
+    // safe to ignore
+  }
+  await sql`DROP TABLE IF EXISTS maestra_products`;
+  await ensureMaestraTable();
+}
+
 // Test connection and check table
 export async function initializeMaestraDatabase(): Promise<{
   connected: boolean;
@@ -233,9 +303,15 @@ export async function initializeMaestraDatabase(): Promise<{
     const sql = getSql();
     await sql`SELECT 1`;
     await ensureMaestraTable();
-    await ensureMagentoTable();
     await ensureKeywordsTable();
     await ensureSettingsTable();
+    // Migrate legacy shared table → per-view tables if needed
+    await migrateSharedMagentoTable();
+    // Ensure per-view tables exist for every configured view
+    const config = await loadMagentoConfig();
+    for (const view of config.views) {
+      await ensureViewTable(view);
+    }
     return { connected: true, tableExists: true };
   } catch {
     return { connected: false, tableExists: false };
@@ -243,94 +319,164 @@ export async function initializeMaestraDatabase(): Promise<{
 }
 
 // ============================================
-// Magento Products table
+// Per-view Magento tables
 // ============================================
 
-async function ensureMagentoTable(): Promise<void> {
+/** Create the table for a single view if it doesn't exist, and ensure manual columns are present. */
+async function ensureViewTable(view: MagentoViewConfig): Promise<void> {
   const sql = getSql();
-  await sql`
-    CREATE TABLE IF NOT EXISTS magento_products (
+  const tbl = viewTableName(view.id);
+  await sql(`
+    CREATE TABLE IF NOT EXISTS "${tbl}" (
       id SERIAL PRIMARY KEY,
       maestra_id INTEGER NOT NULL,
-      sku TEXT,
-      name TEXT,
-      url_key TEXT,
-      meta_title TEXT,
-      meta_keywords TEXT,
-      meta_description TEXT,
-      short_description TEXT,
-      long_description TEXT,
-      price DOUBLE PRECISION,
-      weight DOUBLE PRECISION,
-      shipping_type TEXT,
       created_at TIMESTAMPTZ DEFAULT NOW(),
       updated_at TIMESTAMPTZ DEFAULT NOW()
     )
-  `;
-  // Add new columns if they don't exist (for existing tables)
-  for (const col of ["meta_description", "short_description", "long_description"]) {
-    try {
-      await sql(`ALTER TABLE magento_products ADD COLUMN IF NOT EXISTS "${col}" TEXT`);
-    } catch {
-      // Column already exists
+  `);
+  // Ensure every manual column exists
+  for (const col of view.columns) {
+    if (col.source.type === "manual") {
+      const dbCol = manualDbColumn(view.id, col.id);
+      try {
+        await sql(`ALTER TABLE "${tbl}" ADD COLUMN IF NOT EXISTS "${dbCol}" TEXT`);
+      } catch {
+        // column already exists
+      }
     }
   }
 }
 
-// Sync magento_products from maestra_products (insert missing, remove orphans)
-export async function syncMagentoFromMaestra(): Promise<{ added: number; removed: number }> {
+/**
+ * Migrate legacy shared `magento_products` table to per-view tables.
+ * Only runs once: if `magento_products` exists, data is copied to each view's table,
+ * then the legacy table is dropped.
+ */
+async function migrateSharedMagentoTable(): Promise<void> {
   const sql = getSql();
-  await ensureMagentoTable();
-
-  // Remove magento rows whose maestra_id no longer exists
-  const removeResult = await sql`
-    DELETE FROM magento_products
-    WHERE maestra_id NOT IN (SELECT id FROM maestra_products)
+  // Check if legacy table exists
+  const exists = await sql`
+    SELECT 1 FROM information_schema.tables
+    WHERE table_name = 'magento_products'
   `;
+  if (exists.length === 0) return;
+
+  const config = await loadMagentoConfig();
+  if (config.views.length === 0) {
+    // No views configured — just drop the legacy table
+    await sql`DROP TABLE IF EXISTS magento_products`;
+    return;
+  }
+
+  for (const view of config.views) {
+    await ensureViewTable(view);
+    const tbl = viewTableName(view.id);
+
+    // Copy maestra_id rows that don't exist yet in the new table
+    await sql(`
+      INSERT INTO "${tbl}" (maestra_id)
+      SELECT mp.maestra_id FROM magento_products mp
+      WHERE mp.maestra_id NOT IN (SELECT maestra_id FROM "${tbl}")
+    `);
+
+    // Copy manual column data from legacy namespaced columns
+    for (const col of view.columns) {
+      if (col.source.type === "manual") {
+        const newCol = manualDbColumn(view.id, col.id);
+        const legacyCol = legacyManualDbColumn(view.id, col.id);
+        // Check if legacy column exists
+        const colExists = await sql(`
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'magento_products' AND column_name = $1
+        `, [legacyCol]);
+        if (colExists.length > 0) {
+          await sql(`
+            UPDATE "${tbl}" t
+            SET "${newCol}" = mp."${legacyCol}"
+            FROM magento_products mp
+            WHERE t.maestra_id = mp.maestra_id
+              AND mp."${legacyCol}" IS NOT NULL
+              AND (t."${newCol}" IS NULL OR t."${newCol}" = '')
+          `);
+        }
+      }
+    }
+  }
+
+  // Drop the legacy table
+  await sql`DROP TABLE IF EXISTS magento_products`;
+}
+
+// Sync a single view's table from maestra_products (insert missing, remove orphans)
+export async function syncViewFromMaestra(viewId: string): Promise<{ added: number; removed: number }> {
+  const sql = getSql();
+  const tbl = viewTableName(viewId);
+
+  // Ensure the per-view table exists before running any sync SQL
+  const config = await loadMagentoConfig();
+  const view = config.views.find((v) => v.id === viewId);
+  if (view) await ensureViewTable(view);
+
+  // Remove rows whose maestra_id no longer exists
+  const removeResult = await sql(`
+    DELETE FROM "${tbl}"
+    WHERE maestra_id NOT IN (SELECT id FROM maestra_products)
+  `);
   const removed = removeResult.length ?? 0;
 
-  // Insert magento rows for maestra products that don't have one yet
-  const newRows = await sql`
-    INSERT INTO magento_products (maestra_id, sku, weight, shipping_type)
-    SELECT mp.id, mp.item_no, mp.weight_sales_unit, mp.shipping_type
+  // Insert rows for maestra products that don't have one yet
+  const newRows = await sql(`
+    INSERT INTO "${tbl}" (maestra_id)
+    SELECT mp.id
     FROM maestra_products mp
-    WHERE mp.id NOT IN (SELECT maestra_id FROM magento_products)
+    WHERE mp.id NOT IN (SELECT maestra_id FROM "${tbl}")
     RETURNING id
-  `;
+  `);
 
   return { added: newRows.length, removed };
 }
 
-// Get all magento products joined with key maestra fields
-export async function getMagentoProducts(): Promise<MagentoProduct[]> {
+// Sync all configured views from maestra
+export async function syncAllViewsFromMaestra(): Promise<void> {
+  const config = await loadMagentoConfig();
+  for (const view of config.views) {
+    await ensureViewTable(view);
+    await syncViewFromMaestra(view.id);
+  }
+}
+
+// Get all products for a specific view
+export async function getViewProducts(viewId: string): Promise<MagentoProduct[]> {
   const sql = getSql();
-  await ensureMagentoTable();
-  const rows = await sql`
-    SELECT mg.*
-    FROM magento_products mg
-    ORDER BY mg.id
-  `;
+  const tbl = viewTableName(viewId);
+  // Ensure table exists
+  const config = await loadMagentoConfig();
+  const view = config.views.find((v) => v.id === viewId);
+  if (view) await ensureViewTable(view);
+  const rows = await sql(`SELECT * FROM "${tbl}" ORDER BY id`);
   return rows as unknown as MagentoProduct[];
 }
 
-// Get magento products by IDs
-export async function getMagentoProductsByIds(ids: number[]): Promise<MagentoProduct[]> {
+// Get view products by IDs
+export async function getViewProductsByIds(viewId: string, ids: number[]): Promise<MagentoProduct[]> {
   if (ids.length === 0) return [];
   const sql = getSql();
-  // Build parameterized query for IN clause
+  const tbl = viewTableName(viewId);
   const placeholders = ids.map((_, i) => `$${i + 1}`).join(", ");
-  const query = `SELECT * FROM magento_products WHERE id IN (${placeholders}) ORDER BY id`;
+  const query = `SELECT * FROM "${tbl}" WHERE id IN (${placeholders}) ORDER BY id`;
   const rows = await sql(query, ids);
   return rows as unknown as MagentoProduct[];
 }
 
-// Update a single magento cell
-export async function updateMagentoCell(
+// Update a single cell in a view's table
+export async function updateViewCell(
+  viewId: string,
   id: number,
   columnName: string,
   value: string | null
 ): Promise<void> {
   const sql = getSql();
+  const tbl = viewTableName(viewId);
   const now = new Date().toISOString();
 
   const numericCols = new Set(["price", "weight"]);
@@ -340,21 +486,21 @@ export async function updateMagentoCell(
     finalValue = isNaN(num) ? null : num;
   }
 
-  const query = `UPDATE magento_products SET "${columnName}" = $1, "updated_at" = $2 WHERE "id" = $3`;
+  const query = `UPDATE "${tbl}" SET "${columnName}" = $1, "updated_at" = $2 WHERE "id" = $3`;
   await sql(query, [finalValue, now, id]);
 }
 
 /**
- * Update magento dynamic fields using _row_id (the DB id as a string).
- * The id is passed as a string through the AI round-trip to avoid BigInt
- * precision loss, and matched via id::text in the WHERE clause.
+ * Bulk update fields in a view's table using _row_id (the DB id as a string).
  */
-export async function bulkUpdateMagentoDynamicFieldsByRowId(
+export async function bulkUpdateViewFieldsByRowId(
+  viewId: string,
   updates: Record<string, unknown>[],
   dbColumns: string[]
 ): Promise<number> {
   if (updates.length === 0 || dbColumns.length === 0) return 0;
   const sql = getSql();
+  const tbl = viewTableName(viewId);
   const now = new Date().toISOString();
   let updated = 0;
 
@@ -362,37 +508,47 @@ export async function bulkUpdateMagentoDynamicFieldsByRowId(
     const rowId = row._row_id as string;
     if (!rowId) continue;
 
-    // Build SET clause dynamically for the specified columns
     const setClauses: string[] = [];
     const params: (string | number | null)[] = [];
     let paramIndex = 1;
 
+    const numericCols = new Set(["price", "weight"]);
     for (const col of dbColumns) {
       const val = row[col];
       setClauses.push(`"${col}" = $${paramIndex}`);
-      params.push(val != null ? String(val) : null);
+      if (val != null && numericCols.has(col)) {
+        const num = Number(val);
+        params.push(isNaN(num) ? null : num);
+      } else {
+        params.push(val != null ? String(val) : null);
+      }
       paramIndex++;
     }
 
-    // Add updated_at
     setClauses.push(`"updated_at" = $${paramIndex}`);
     params.push(now);
     paramIndex++;
 
-    // Add row id for WHERE clause — compare as text to avoid BigInt precision issues
     params.push(rowId);
 
-    const query = `UPDATE magento_products SET ${setClauses.join(", ")} WHERE id::text = $${paramIndex}`;
+    const query = `UPDATE "${tbl}" SET ${setClauses.join(", ")} WHERE id::text = $${paramIndex}`;
 
     try {
       await sql(query, params);
       updated++;
     } catch (err) {
-      console.error(`Failed to update magento product with id ${rowId}:`, err);
+      console.error(`Failed to update view ${viewId} product with id ${rowId}:`, err);
     }
   }
 
   return updated;
+}
+
+/** Drop the table for a view (when the view is deleted). */
+export async function dropViewTable(viewId: string): Promise<void> {
+  const sql = getSql();
+  const tbl = viewTableName(viewId);
+  await sql(`DROP TABLE IF EXISTS "${tbl}"`);
 }
 
 // ============================================
@@ -444,25 +600,15 @@ export async function loadMagentoConfig(): Promise<MagentoConfig> {
 }
 
 /**
- * Save the Magento export config. Ensures a DB column exists in magento_products for every
- * manual column across all views (namespaced with the view id to keep data isolated per view).
+ * Save the Magento export config. Ensures per-view tables and their manual columns exist.
  */
 export async function saveMagentoConfig(config: MagentoConfig): Promise<void> {
   const sql = getSql();
   await ensureSettingsTable();
-  await ensureMagentoTable();
 
+  // Ensure each view has its own table with the right columns
   for (const view of config.views) {
-    for (const col of view.columns) {
-      if (col.source.type === "manual") {
-        const dbCol = manualDbColumn(view.id, col.id);
-        try {
-          await sql(`ALTER TABLE magento_products ADD COLUMN IF NOT EXISTS "${dbCol}" TEXT`);
-        } catch {
-          // column may already exist or name conflict — ignore
-        }
-      }
-    }
+    await ensureViewTable(view);
   }
 
   const value = JSON.stringify(config);

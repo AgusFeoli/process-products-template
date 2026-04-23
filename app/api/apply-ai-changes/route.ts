@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { bulkUpdateMagentoDynamicFieldsByRowId } from "@/lib/maestra-db";
+import { bulkUpdateViewFieldsByRowId } from "@/lib/maestra-db";
 
 export const dynamic = "force-dynamic";
 
@@ -11,10 +11,18 @@ interface ApprovedChange {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { changes, dbColumns } = body as {
+    const { changes, dbColumns, viewId } = body as {
       changes: ApprovedChange[];
       dbColumns: string[];
+      viewId: string;
     };
+
+    if (!viewId) {
+      return NextResponse.json({
+        success: false,
+        message: "No se especificó la vista (viewId)",
+      });
+    }
 
     if (!changes || changes.length === 0) {
       return NextResponse.json({
@@ -30,7 +38,7 @@ export async function POST(request: Request) {
       });
     }
 
-    // Build update rows in the format expected by bulkUpdateMagentoDynamicFieldsByRowId
+    // Build update rows in the format expected by bulkUpdateViewFieldsByRowId
     const updateRows = changes.map((change) => {
       const row: Record<string, unknown> = { _row_id: change._row_id };
       for (const col of dbColumns) {
@@ -41,7 +49,8 @@ export async function POST(request: Request) {
       return row;
     });
 
-    const updated = await bulkUpdateMagentoDynamicFieldsByRowId(
+    const updated = await bulkUpdateViewFieldsByRowId(
+      viewId,
       updateRows,
       dbColumns
     );

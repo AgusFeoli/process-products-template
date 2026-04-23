@@ -73,13 +73,31 @@ export function sanitizeColumnId(id: string): string {
 
 /**
  * Build the DB column name for a manual column inside a given view.
- * Prefixing with the view id keeps manual data isolated per view.
+ * Each view now has its own table, so we no longer need the viewId prefix.
+ * The column name is simply `c_{sanitized_colId}`.
+ * For backwards-compat the function still accepts viewId but ignores it.
  */
-export function manualDbColumn(viewId: string, columnId: string): string {
+export function manualDbColumn(_viewId: string, columnId: string): string {
+  const c = sanitizeColumnId(columnId);
+  const combined = `c_${c}`;
+  if (combined.length <= 63) return combined;
+  return combined.substring(0, 63);
+}
+
+/**
+ * Legacy column name format used when all views shared a single table.
+ * Used during migration to read old data from `magento_products`.
+ */
+export function legacyManualDbColumn(viewId: string, columnId: string): string {
   const v = sanitizeColumnId(viewId);
   const c = sanitizeColumnId(columnId);
-  // Keep overall length <= 63 (Postgres identifier limit)
   const combined = `v_${v}_${c}`;
   if (combined.length <= 63) return combined;
   return combined.substring(0, 63);
+}
+
+/** PostgreSQL table name for a given view. */
+export function viewTableName(viewId: string): string {
+  const safe = sanitizeColumnId(viewId);
+  return `magento_${safe}`;
 }
