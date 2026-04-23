@@ -3,12 +3,14 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { generateObject } from "ai";
 import { z } from "zod";
 import {
-  getMagentoProductsByIds,
-  getMagentoProducts,
-  bulkUpdateMagentoDynamicFieldsByRowId,
+  getViewProductsByIds,
+  getViewProducts,
+  bulkUpdateViewFieldsByRowId,
   getMaestraProducts,
   getTopKeywordsForContext,
   getSystemPrompt,
+  loadMaestraColumnMeta,
+  loadMaestraIdentifierColumn,
 } from "@/lib/maestra-db";
 
 export const dynamic = "force-dynamic";
@@ -38,12 +40,20 @@ function buildDynamicSchema(columns: ColumnDef[]) {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { productIds, mode, columns, preview } = body as {
+    const { productIds, mode, columns, preview, viewId } = body as {
       productIds?: number[];
       mode: "selected" | "all";
       columns?: ColumnDef[];
       preview?: boolean;
+      viewId: string;
     };
+
+    if (!viewId) {
+      return NextResponse.json({
+        success: false,
+        message: "No se especificó la vista (viewId)",
+      });
+    }
 
     if (!columns || columns.length === 0) {
       return NextResponse.json({
@@ -52,12 +62,12 @@ export async function POST(request: Request) {
       });
     }
 
-    // Get magento products to process
+    // Get products from the view's table
     let magentoProducts;
     if (mode === "selected" && productIds && productIds.length > 0) {
-      magentoProducts = await getMagentoProductsByIds(productIds);
+      magentoProducts = await getViewProductsByIds(viewId, productIds);
     } else {
-      magentoProducts = await getMagentoProducts();
+      magentoProducts = await getViewProducts(viewId);
     }
 
     if (magentoProducts.length === 0) {
@@ -109,34 +119,54 @@ export async function POST(request: Request) {
 ${JSON.stringify(keywordsJson, null, 2)}`;
     }
 
-    // Build context for AI with maestra product details.
+    // Load column metadata so we can use the original Excel headers as keys
+    // (more semantic for the AI than the normalized db column names).
+    const columnMeta = await loadMaestraColumnMeta();
+    const dbColumnToHeader = new Map<string, string>();
+    if (columnMeta) {
+      for (const meta of columnMeta) {
+        dbColumnToHeader.set(meta.dbColumn, meta.excelHeader);
+      }
+    }
+
+    // The user-chosen identifier column (maestra dbColumn). When set, this is
+    // what we display next to each product in the AI preview/diff. When null,
+    // we fall back to the internal row id.
+    const identifierColumn = await loadMaestraIdentifierColumn();
+
+    // Build context for AI dynamically using ALL available maestra columns.
+    // Previously this hardcoded a fixed set of fields (item_description, familia, etc.)
+    // which meant if the maestra didn't have those exact columns, the AI received
+    // almost nothing. Now we pass every non-system column from the maestra row,
+    // keyed by the original Excel header when available.
     // Use _row_id (the DB id as a string) as the round-trip identifier to avoid
-    // BigInt precision loss — both id and maestra_id exceed JS Number.MAX_SAFE_INTEGER.
-    // Passing id as a string preserves full precision through AI JSON round-trip.
+    // BigInt precision loss.
+    const SYSTEM_COLUMNS = new Set(["id", "created_at", "updated_at"]);
     const productsForAi = magentoProducts.map((mp) => {
       const maestra = maestraMap.get(mp.maestra_id);
-      return {
+      const entry: Record<string, string | number> = {
         _row_id: String(mp.id),
         sku: mp.sku || "",
-        item_description: maestra?.item_description || "",
-        familia: maestra?.familia || "",
-        sub_familia: maestra?.sub_familia || "",
-        marca: maestra?.marca || "",
-        color: maestra?.color || "",
-        tamano: maestra?.tamano || "",
-        composicion: maestra?.composicion || "",
-        estilo: maestra?.estilo || "",
-        categoria_venta: maestra?.categoria_venta || "",
-        rubro: maestra?.rubro || "",
-        diseno: maestra?.diseno || "",
       };
+      if (maestra) {
+        for (const [key, value] of Object.entries(maestra)) {
+          if (SYSTEM_COLUMNS.has(key)) continue;
+          if (value === null || value === undefined || value === "") continue;
+          const label = dbColumnToHeader.get(key) || key;
+          entry[label] = value as string | number;
+        }
+      }
+      return entry;
     });
 
     // Build dynamic schema based on the columns the user wants generated
     const productOutputSchema = buildDynamicSchema(columns);
 
-    // Build the column list for the AI prompt
-    const columnDescriptions = columns.map((c) => `- ${c.dbColumn} (${c.name})`).join("\n");
+    // Build the column list for the AI prompt. Use the human-readable name;
+    // the JSON key (dbColumn) is already enforced by the Zod schema.
+    const columnDescriptions = columns
+      .map((c) => (c.name && c.name !== c.dbColumn ? `- ${c.name} (key: "${c.dbColumn}")` : `- ${c.dbColumn}`))
+      .join("\n");
 
     // Process in batches of 20 to avoid token limits
     const BATCH_SIZE = 20;
@@ -161,11 +191,25 @@ ${JSON.stringify(keywordsJson, null, 2)}`;
             for (const col of dbColumns) {
               row[col] = (mp as unknown as Record<string, unknown>)[col] ?? null;
             }
-            // Include maestra context for display
+            // Include maestra context for display. If the user chose an
+            // identifier column, show that column's value; otherwise fall back
+            // to the internal row id.
             const maestra = maestraMap.get(mp.maestra_id);
             if (maestra) {
               row._sku = mp.sku;
-              row._item_description = maestra.item_description || "";
+              let description = "";
+              if (identifierColumn) {
+                const value = (maestra as Record<string, unknown>)[identifierColumn];
+                if (value !== null && value !== undefined && String(value).trim() !== "") {
+                  description = String(value);
+                }
+              }
+              if (!description) {
+                description = `#${mp.id}`;
+              }
+              row._item_description = description;
+            } else {
+              row._item_description = `#${mp.id}`;
             }
             return [String(mp.id), row];
           })
@@ -204,7 +248,8 @@ Devuelve un objeto JSON con un array "products". Cada elemento debe tener el mis
               ...(object.products as Record<string, unknown>[])
             );
           } else {
-            const updated = await bulkUpdateMagentoDynamicFieldsByRowId(
+            const updated = await bulkUpdateViewFieldsByRowId(
+              viewId,
               object.products as Record<string, unknown>[],
               dbColumns
             );

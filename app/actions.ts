@@ -7,15 +7,19 @@ import {
   updateMaestraCell,
   deleteMaestraRow,
   deleteAllMaestraRows,
-  syncMagentoFromMaestra,
-  getMagentoProducts,
-  getMagentoProductsByIds,
-  updateMagentoCell,
+  syncViewFromMaestra,
+  syncAllViewsFromMaestra,
+  getViewProducts,
+  getViewProductsByIds,
+  updateViewCell,
+  dropViewTable,
   getKeywordCount,
   getSystemPrompt,
   saveSystemPrompt,
   getDefaultSystemPrompt,
   loadMaestraColumnMeta,
+  loadMaestraIdentifierColumn,
+  saveMaestraIdentifierColumn,
   loadMagentoConfig,
   saveMagentoConfig,
   type MaestraProduct,
@@ -70,6 +74,31 @@ export async function fetchColumnMeta(): Promise<ColumnMeta[] | null> {
     return await loadMaestraColumnMeta();
   } catch {
     return null;
+  }
+}
+
+// Fetch the chosen identifier column (dbColumn) or null if none set
+export async function fetchIdentifierColumn(): Promise<string | null> {
+  try {
+    return await loadMaestraIdentifierColumn();
+  } catch {
+    return null;
+  }
+}
+
+// Save the chosen identifier column (dbColumn) or null to use the internal id
+export async function updateIdentifierColumn(
+  dbColumn: string | null
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    await saveMaestraIdentifierColumn(dbColumn);
+    return { success: true };
+  } catch (error) {
+    console.error("Update identifier column error:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to save identifier column",
+    };
   }
 }
 
@@ -202,16 +231,16 @@ export async function exportCsv(productIds?: number[]): Promise<{
 // Magento actions
 // ============================================
 
-// Sync magento products from maestra and fetch them
-export async function fetchMagentoData(): Promise<{
+// Sync and fetch magento products for a specific view
+export async function fetchMagentoData(viewId: string): Promise<{
   success: boolean;
   data?: MagentoProduct[];
   count?: number;
   error?: string;
 }> {
   try {
-    await syncMagentoFromMaestra();
-    const data = await getMagentoProducts();
+    await syncViewFromMaestra(viewId);
+    const data = await getViewProducts(viewId);
     return { success: true, data, count: data.length };
   } catch (error) {
     console.error("Fetch magento data error:", error);
@@ -222,20 +251,37 @@ export async function fetchMagentoData(): Promise<{
   }
 }
 
-// Update a magento cell
+// Update a magento cell in a specific view's table
 export async function updateMagentoField(
+  viewId: string,
   id: number,
   columnName: string,
   value: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    await updateMagentoCell(id, columnName, value);
+    await updateViewCell(viewId, id, columnName, value);
     return { success: true };
   } catch (error) {
     console.error("Update magento cell error:", error);
     return {
       success: false,
       error: error instanceof Error ? error.message : "Failed to update magento cell",
+    };
+  }
+}
+
+// Delete a view and its table
+export async function deleteMagentoView(
+  viewId: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    await dropViewTable(viewId);
+    return { success: true };
+  } catch (error) {
+    console.error("Delete magento view error:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to delete view table",
     };
   }
 }
@@ -276,10 +322,10 @@ export async function exportMagentoCsv(
   error?: string;
 }> {
   try {
-    await syncMagentoFromMaestra();
+    await syncViewFromMaestra(viewId);
     const magentoData = productIds && productIds.length > 0
-      ? await getMagentoProductsByIds(productIds)
-      : await getMagentoProducts();
+      ? await getViewProductsByIds(viewId, productIds)
+      : await getViewProducts(viewId);
     const maestraData = await getMaestraProducts();
     const maestraMap = new Map(maestraData.map((p) => [p.id, p]));
 

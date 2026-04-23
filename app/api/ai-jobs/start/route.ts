@@ -3,9 +3,9 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { generateObject } from "ai";
 import { z } from "zod";
 import {
-  getMagentoProductsByIds,
-  getMagentoProducts,
-  bulkUpdateMagentoDynamicFieldsByRowId,
+  getViewProductsByIds,
+  getViewProducts,
+  bulkUpdateViewFieldsByRowId,
   getMaestraProducts,
   getTopKeywordsForContext,
   getSystemPrompt,
@@ -13,6 +13,7 @@ import {
   updateAiJobProgress,
   cleanupOldAiJobs,
   getAiJob,
+  loadMaestraColumnMeta,
 } from "@/lib/maestra-db";
 import {
   BatchEngine,
@@ -57,6 +58,7 @@ function chunkArray<T>(arr: T[], size: number): T[][] {
 // Uses BatchEngine for controlled parallelism with circuit breaker and adaptive throttling
 async function processAiJob(
   jobId: string,
+  viewId: string,
   productsForAi: Array<Record<string, string | number>>,
   keywordContext: string,
   systemPrompt: string,
@@ -74,7 +76,12 @@ async function processAiJob(
 
   // Build dynamic schema and prompt based on the columns
   const productOutputSchema = buildDynamicSchema(columns);
-  const columnDescriptions = columns.map((c) => `- ${c.dbColumn} (${c.name})`).join("\n");
+  // Use only the human-readable name in the description. The JSON key (dbColumn)
+  // is already enforced by the Zod schema, so there's no need to expose the
+  // internal identifier to the AI.
+  const columnDescriptions = columns
+    .map((c) => (c.name && c.name !== c.dbColumn ? `- ${c.name} (key: "${c.dbColumn}")` : `- ${c.dbColumn}`))
+    .join("\n");
   const dbColumns = columns.map((c) => c.dbColumn);
 
   // Split products into batches of 20 — each batch = one AI request
@@ -184,7 +191,8 @@ Devuelve un objeto JSON con un array "products". Cada elemento debe tener el mis
         });
 
         if (object.products && object.products.length > 0) {
-          const updated = await bulkUpdateMagentoDynamicFieldsByRowId(
+          const updated = await bulkUpdateViewFieldsByRowId(
+            viewId,
             object.products as Record<string, unknown>[],
             dbColumns
           );
@@ -267,11 +275,19 @@ Devuelve un objeto JSON con un array "products". Cada elemento debe tener el mis
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { productIds, mode, columns } = body as {
+    const { productIds, mode, columns, viewId } = body as {
       productIds?: number[];
       mode: "selected" | "all";
       columns?: ColumnDef[];
+      viewId: string;
     };
+
+    if (!viewId) {
+      return NextResponse.json({
+        success: false,
+        message: "No se especificó la vista (viewId)",
+      });
+    }
 
     if (!columns || columns.length === 0) {
       return NextResponse.json({
@@ -280,12 +296,12 @@ export async function POST(request: Request) {
       });
     }
 
-    // Get magento products to process
+    // Get products from the view's table
     let magentoProducts;
     if (mode === "selected" && productIds && productIds.length > 0) {
-      magentoProducts = await getMagentoProductsByIds(productIds);
+      magentoProducts = await getViewProductsByIds(viewId, productIds);
     } else {
-      magentoProducts = await getMagentoProducts();
+      magentoProducts = await getViewProducts(viewId);
     }
 
     if (magentoProducts.length === 0) {
@@ -337,27 +353,39 @@ export async function POST(request: Request) {
 ${JSON.stringify(keywordsJson, null, 2)}`;
     }
 
-    // Build context for AI with maestra product details.
+    // Load column metadata so we can use the original Excel headers as keys
+    // (more semantic for the AI than the normalized db column names).
+    const columnMeta = await loadMaestraColumnMeta();
+    const dbColumnToHeader = new Map<string, string>();
+    if (columnMeta) {
+      for (const meta of columnMeta) {
+        dbColumnToHeader.set(meta.dbColumn, meta.excelHeader);
+      }
+    }
+
+    // Build context for AI dynamically using ALL available maestra columns.
+    // Previously this hardcoded a fixed set of fields (item_description, familia, etc.)
+    // which meant if the maestra didn't have those exact columns, the AI received
+    // almost nothing. Now we pass every non-system column from the maestra row,
+    // keyed by the original Excel header when available.
     // Use _row_id (the DB id as a string) as the round-trip identifier to avoid
-    // BigInt precision loss — both id and maestra_id exceed JS Number.MAX_SAFE_INTEGER.
-    // Passing id as a string preserves full precision through AI JSON round-trip.
+    // BigInt precision loss.
+    const SYSTEM_COLUMNS = new Set(["id", "created_at", "updated_at"]);
     const productsForAi = magentoProducts.map((mp) => {
       const maestra = maestraMap.get(mp.maestra_id);
-      return {
+      const entry: Record<string, string | number> = {
         _row_id: String(mp.id),
         sku: mp.sku || "",
-        item_description: maestra?.item_description || "",
-        familia: maestra?.familia || "",
-        sub_familia: maestra?.sub_familia || "",
-        marca: maestra?.marca || "",
-        color: maestra?.color || "",
-        tamano: maestra?.tamano || "",
-        composicion: maestra?.composicion || "",
-        estilo: maestra?.estilo || "",
-        categoria_venta: maestra?.categoria_venta || "",
-        rubro: maestra?.rubro || "",
-        diseno: maestra?.diseno || "",
       };
+      if (maestra) {
+        for (const [key, value] of Object.entries(maestra)) {
+          if (SYSTEM_COLUMNS.has(key)) continue;
+          if (value === null || value === undefined || value === "") continue;
+          const label = dbColumnToHeader.get(key) || key;
+          entry[label] = value as string | number;
+        }
+      }
+      return entry;
     });
 
     // Clean up old jobs
@@ -368,7 +396,7 @@ ${JSON.stringify(keywordsJson, null, 2)}`;
     await createAiJob(jobId, productsForAi.length);
 
     // Fire and forget: start background processing
-    processAiJob(jobId, productsForAi, keywordContext, systemPrompt, columns).catch(
+    processAiJob(jobId, viewId, productsForAi, keywordContext, systemPrompt, columns).catch(
       (err) => {
         console.error("Background AI job failed:", err);
         updateAiJobProgress(jobId, {

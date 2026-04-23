@@ -4,7 +4,7 @@ import {
   ensureMaestraTable,
   ensureMaestraColumns,
   insertMaestraRows,
-  deleteAllMaestraRows,
+  recreateMaestraTable,
   saveMaestraColumnMeta,
 } from "@/lib/maestra-db";
 import { buildColumnMeta } from "@/lib/maestra-columns";
@@ -69,11 +69,11 @@ export async function POST(request: Request) {
       );
     }
 
+    // Ensure all columns exist in the DB table BEFORE saving metadata
+    await ensureMaestraColumns(columnMeta);
+
     // Save column metadata so the UI knows the column names
     await saveMaestraColumnMeta(columnMeta);
-
-    // Ensure all columns exist in the DB table
-    await ensureMaestraColumns(columnMeta);
 
     // Map DB column names for building row objects
     const dbHeaders = columnMeta.map((m) => m.dbColumn);
@@ -100,9 +100,11 @@ export async function POST(request: Request) {
       );
     }
 
-    // If mode is "replace", delete existing data first
+    // If mode is "replace", drop and recreate table (removes data + ghost columns)
     if (mode === "replace") {
-      await deleteAllMaestraRows();
+      await recreateMaestraTable();
+      // Re-create the columns on the fresh table
+      await ensureMaestraColumns(columnMeta);
     }
 
     // Insert rows
