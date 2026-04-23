@@ -114,6 +114,9 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Cache for magento view data — avoids re-fetching when switching tabs without changes
+  const viewCacheRef = useRef<Map<string, MagentoProduct[]>>(new Map());
+
   // Dataset view
   const [activeView, setActiveView] = useState<DatasetView>("maestra");
 
@@ -425,10 +428,25 @@ export default function Home() {
   }, [loadData]);
 
   // Load magento products when active view changes to a magento view
-  const loadViewProducts = useCallback(async (viewId: string) => {
+  const loadViewProducts = useCallback(async (viewId: string, forceReload = false) => {
+    // Use cached data if available and no forced reload
+    if (!forceReload && viewCacheRef.current.has(viewId)) {
+      setMagentoProducts(viewCacheRef.current.get(viewId)!);
+      return;
+    }
     const result = await fetchMagentoData(viewId);
     if (result.success && result.data) {
+      viewCacheRef.current.set(viewId, result.data);
       setMagentoProducts(result.data);
+    }
+  }, []);
+
+  // Invalidate cached view data — call before reloading after a real change
+  const invalidateViewCache = useCallback((viewId?: string) => {
+    if (viewId) {
+      viewCacheRef.current.delete(viewId);
+    } else {
+      viewCacheRef.current.clear();
     }
   }, []);
 
@@ -439,6 +457,7 @@ export default function Home() {
   }, [activeView, magentoConfig, loadViewProducts]);
 
   const handleRefresh = async () => {
+    invalidateViewCache();
     await loadData();
     if (activeView !== "maestra") {
       await loadViewProducts(activeView);
@@ -452,6 +471,7 @@ export default function Home() {
       const result = await deleteAllRows();
       if (result.success) {
         toast.success(`Se eliminaron ${result.deletedCount} filas`);
+        invalidateViewCache();
         await loadData();
       } else {
         toast.error(result.error || "Error al eliminar");
@@ -506,6 +526,7 @@ export default function Home() {
         if (data.errorCount > 0) {
           toast.warning(`${data.errorCount} filas tuvieron errores`);
         }
+        invalidateViewCache();
         await loadData();
         // After a successful import, ask the user to pick the identifier column.
         // Seed the picker with the currently persisted choice (or "__none__").
@@ -692,6 +713,7 @@ export default function Home() {
       }
       const result = await updateMagentoField(activeMagentoView!.id, id, columnName, value);
       if (result.success) {
+        invalidateViewCache(activeMagentoView!.id);
         await loadViewProducts(activeMagentoView!.id);
         toast.success("Celda actualizada");
       } else {
@@ -700,6 +722,7 @@ export default function Home() {
     } else {
       const result = await updateCell(id, columnName, value);
       if (result.success) {
+        invalidateViewCache();
         await loadData(false);
         toast.success("Celda actualizada");
       } else {
@@ -712,6 +735,7 @@ export default function Home() {
     const result = await deleteRow(id);
     if (result.success) {
       toast.success("Fila eliminada");
+      invalidateViewCache();
       await loadData();
     } else {
       toast.error(result.error || "Error al eliminar");
@@ -838,6 +862,7 @@ export default function Home() {
           setAiJobId(null);
 
           // Reload data once now that processing is finished
+          invalidateViewCache();
           await loadData(false);
           // Also reload the magento view products
           if (activeMagentoView) {
@@ -930,6 +955,7 @@ export default function Home() {
         toast.success(`IA generó cambios para ${data.changes.length} productos. Revisá los cambios.`);
       } else if (data.success) {
         toast.success(data.message);
+        invalidateViewCache(activeMagentoView.id);
         await loadViewProducts(activeMagentoView.id);
         setSelectedMagentoRows(new Set());
       } else {
@@ -959,7 +985,10 @@ export default function Home() {
 
       if (data.success) {
         toast.success(data.message);
-        if (activeMagentoView) await loadViewProducts(activeMagentoView.id);
+        if (activeMagentoView) {
+          invalidateViewCache(activeMagentoView.id);
+          await loadViewProducts(activeMagentoView.id);
+        }
         setSelectedMagentoRows(new Set());
       } else {
         toast.error(data.message || "Error al aplicar cambios");
@@ -1349,6 +1378,7 @@ export default function Home() {
         maestraColumns={columnMeta ?? []}
         onSaved={(cfg) => {
           setMagentoConfig(cfg);
+          invalidateViewCache();
           void loadData(false);
         }}
         onDeleteView={handleDeleteView}
