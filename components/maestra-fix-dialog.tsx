@@ -56,6 +56,7 @@ export function MaestraFixDialog({
   isRunning,
 }: Props) {
   const [rows, setRows] = useState<ColumnState[]>([]);
+  const [globalPrompt, setGlobalPrompt] = useState("");
   const [isSaving, setIsSaving] = useState(false);
 
   // Merge maestra columns with saved config whenever the dialog opens
@@ -72,9 +73,13 @@ export function MaestraFixDialog({
       };
     });
     setRows(merged);
+    setGlobalPrompt(config.globalPrompt ?? "");
   }, [open, maestraColumns, config]);
 
-  const enabledRows = useMemo(() => rows.filter((r) => r.enabled && r.prompt.trim() !== ""), [rows]);
+  const enabledRows = useMemo(
+    () => rows.filter((r) => r.enabled && (r.prompt.trim() !== "" || globalPrompt.trim() !== "")),
+    [rows, globalPrompt]
+  );
 
   const updateRow = (dbColumn: string, patch: Partial<ColumnState>) => {
     setRows((prev) => prev.map((r) => (r.dbColumn === dbColumn ? { ...r, ...patch } : r)));
@@ -84,6 +89,7 @@ export function MaestraFixDialog({
     setIsSaving(true);
     try {
       const cfg: MaestraFixConfig = {
+        globalPrompt,
         columns: rows.map((r) => ({
           dbColumn: r.dbColumn,
           enabled: r.enabled,
@@ -104,11 +110,12 @@ export function MaestraFixDialog({
 
   const handleRun = async (mode: "selected" | "all") => {
     if (enabledRows.length === 0) {
-      toast.error("Marca al menos una columna y escribe su criterio de corrección");
+      toast.error("Marca al menos una columna y escribe un criterio de corrección (global o por columna)");
       return;
     }
     // Save current state before running so the config is persisted
     const cfg: MaestraFixConfig = {
+      globalPrompt,
       columns: rows.map((r) => ({
         dbColumn: r.dbColumn,
         enabled: r.enabled,
@@ -121,9 +128,16 @@ export function MaestraFixDialog({
     } catch {
       // continue anyway
     }
+    // Combine global prompt with per-column prompt
+    const trimmedGlobal = globalPrompt.trim();
     onRun(
       mode,
-      enabledRows.map((r) => ({ dbColumn: r.dbColumn, name: r.name, prompt: r.prompt }))
+      enabledRows.map((r) => {
+        const parts: string[] = [];
+        if (trimmedGlobal) parts.push(trimmedGlobal);
+        if (r.prompt.trim()) parts.push(r.prompt.trim());
+        return { dbColumn: r.dbColumn, name: r.name, prompt: parts.join(". ") };
+      })
     );
     onOpenChange(false);
   };
@@ -142,7 +156,27 @@ export function MaestraFixDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex-1 overflow-y-auto -mx-6 px-6 py-2">
+        <div className="flex-1 overflow-y-auto -mx-6 px-6 py-2 space-y-4">
+          {/* Global prompt */}
+          <div className="rounded-lg border border-violet-400 bg-violet-50/60 p-3 space-y-2">
+            <Label className="font-medium text-violet-800 text-sm flex items-center gap-1.5">
+              <Wand2 className="h-4 w-4" />
+              Corrección global (aplica a todas las columnas seleccionadas)
+            </Label>
+            <Textarea
+              placeholder="Ej: Capitalizar primera letra de cada palabra, corregir errores de ortografía"
+              value={globalPrompt}
+              onChange={(e) => setGlobalPrompt(e.target.value)}
+              className="min-h-[60px] text-sm resize-y"
+            />
+            {globalPrompt.trim() && (
+              <p className="text-xs text-muted-foreground">
+                Este criterio se combinará con el criterio individual de cada columna (si tiene).
+              </p>
+            )}
+          </div>
+
+          {/* Per-column list */}
           {rows.length === 0 ? (
             <div className="text-center text-sm text-muted-foreground py-12">
               No hay columnas cargadas en la maestra. Importa un archivo primero.
@@ -176,7 +210,7 @@ export function MaestraFixDialog({
                         </span>
                       </Label>
                       <Textarea
-                        placeholder="Criterio de corrección (ej: Capitalizar primera letra de cada palabra)"
+                        placeholder={globalPrompt.trim() ? "Criterio adicional para esta columna (opcional si hay corrección global)" : "Criterio de corrección (ej: Capitalizar primera letra de cada palabra)"}
                         value={r.prompt}
                         onChange={(e) => updateRow(r.dbColumn, { prompt: e.target.value })}
                         disabled={!r.enabled}

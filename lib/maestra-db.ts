@@ -1010,6 +1010,7 @@ export interface MaestraFixColumnConfig {
 }
 
 export interface MaestraFixConfig {
+  globalPrompt?: string;
   columns: MaestraFixColumnConfig[];
 }
 
@@ -1024,6 +1025,7 @@ export async function getMaestraFixConfig(): Promise<MaestraFixConfig> {
     const obj = parsed as Record<string, unknown>;
     if (!Array.isArray(obj.columns)) return { columns: [] };
     return {
+      globalPrompt: typeof obj.globalPrompt === "string" ? obj.globalPrompt : "",
       columns: (obj.columns as MaestraFixColumnConfig[]).map((c) => ({
         dbColumn: String(c.dbColumn ?? ""),
         enabled: Boolean(c.enabled),
