@@ -36,16 +36,19 @@ import {
   fetchIdentifierColumn,
   updateIdentifierColumn,
   fetchMagentoConfig,
+  fetchMaestraFixConfig,
   type MaestraProduct,
   type MagentoProduct,
   type ColumnMeta,
   type MagentoConfig,
+  type MaestraFixConfig,
 } from "./actions";
 import {
   getMaestraDisplayName,
 } from "@/lib/maestra-columns";
 import { createDefaultView, manualDbColumn } from "@/lib/magento-config";
 import { MagentoConfigDialog } from "@/components/magento-config-dialog";
+import { MaestraFixDialog } from "@/components/maestra-fix-dialog";
 import { Progress } from "@/components/ui/progress";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -191,6 +194,13 @@ export default function Home() {
   const [showMagentoConfig, setShowMagentoConfig] = useState(false);
   const [configuringViewId, setConfiguringViewId] = useState<string | null>(null);
   const [isCreatingView, setIsCreatingView] = useState(false);
+
+  // Maestra AI Fix state
+  const [showMaestraFixDialog, setShowMaestraFixDialog] = useState(false);
+  const [maestraFixConfig, setMaestraFixConfig] = useState<MaestraFixConfig>({ columns: [] });
+  // Tracks whether the active preview originated from the maestra fix flow.
+  // This lets handleAiReviewConfirm dispatch to the right apply endpoint.
+  const pendingAiScopeRef = useRef<"magento" | "maestra">("magento");
 
   // Generic confirmation dialog state (replaces native browser confirm())
   const [confirmDialog, setConfirmDialog] = useState<{
@@ -384,12 +394,13 @@ export default function Home() {
     setError(null);
 
     try {
-      const [maestraResult, kwStatus, colMeta, mgConfig, identifier] = await Promise.all([
+      const [maestraResult, kwStatus, colMeta, mgConfig, identifier, fixCfg] = await Promise.all([
         fetchMaestraData(),
         fetchKeywordStatus(),
         fetchColumnMeta(),
         fetchMagentoConfig(),
         fetchIdentifierColumn(),
+        fetchMaestraFixConfig(),
       ]);
 
       if (maestraResult.success && maestraResult.data) {
@@ -404,6 +415,7 @@ export default function Home() {
       }
       setMagentoConfig(mgConfig);
       setIdentifierColumn(identifier);
+      setMaestraFixConfig(fixCfg);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load data");
     } finally {
@@ -975,6 +987,26 @@ export default function Home() {
     dbColumns: string[]
   ) => {
     try {
+      // Maestra fix flow
+      if (pendingAiScopeRef.current === "maestra") {
+        const response = await fetch("/api/fix-maestra", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ changes: approvedChanges, dbColumns, preview: false }),
+        });
+        const data = await response.json();
+        if (data.success) {
+          toast.success(`Se aplicaron ${data.updated} de ${data.total} correcciones`);
+          invalidateViewCache();
+          await loadData(false);
+          setSelectedMaestraRows(new Set());
+        } else {
+          toast.error(data.message || "Error al aplicar correcciones");
+        }
+        return;
+      }
+
+      // Magento view flow (default)
       const response = await fetch("/api/apply-ai-changes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -999,6 +1031,7 @@ export default function Home() {
       setShowAiReview(false);
       setPendingAiChanges([]);
       setPendingAiColumns([]);
+      pendingAiScopeRef.current = "magento";
     }
   };
 
@@ -1006,7 +1039,52 @@ export default function Home() {
   const handleAiReviewDiscard = () => {
     setPendingAiChanges([]);
     setPendingAiColumns([]);
+    pendingAiScopeRef.current = "magento";
     toast.info("Cambios descartados");
+  };
+
+  // Maestra AI Fix — generate preview of corrections
+  const handleMaestraFixRun = async (
+    mode: "selected" | "all",
+    activeColumns: { dbColumn: string; name: string; prompt: string }[]
+  ) => {
+    if (activeColumns.length === 0) {
+      toast.error("No hay columnas activas para corregir");
+      return;
+    }
+    setIsGeneratingAi(true);
+    try {
+      const productIds =
+        mode === "selected" ? Array.from(selectedMaestraRows) : undefined;
+      const response = await fetch("/api/fix-maestra", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          productIds,
+          mode,
+          columns: activeColumns,
+          preview: true,
+        }),
+      });
+      const data = await response.json();
+      if (data.success) {
+        if (!data.changes || data.changes.length === 0) {
+          toast.info("La IA no propuso cambios. Los valores ya están correctos según el criterio.");
+          return;
+        }
+        pendingAiScopeRef.current = "maestra";
+        setPendingAiChanges(data.changes as AiProductChange[]);
+        setPendingAiColumns(data.columns as AiColumnDef[]);
+        setShowAiReview(true);
+        toast.success(`IA propuso cambios en ${data.changes.length} productos.`);
+      } else {
+        toast.error(data.message || "Error al ejecutar AI Fix");
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Error al ejecutar AI Fix");
+    } finally {
+      setIsGeneratingAi(false);
+    }
   };
 
   // Reset sort/search when switching views
@@ -1394,6 +1472,18 @@ export default function Home() {
         onDiscard={handleAiReviewDiscard}
       />
 
+      {/* Maestra AI Fix Dialog */}
+      <MaestraFixDialog
+        open={showMaestraFixDialog}
+        onOpenChange={setShowMaestraFixDialog}
+        maestraColumns={columnMeta ?? []}
+        config={maestraFixConfig}
+        hasSelectedRows={selectedMaestraRows.size > 0}
+        onConfigSaved={setMaestraFixConfig}
+        onRun={handleMaestraFixRun}
+        isRunning={isGeneratingAi}
+      />
+
       {/* Top Bar */}
       <header className="shrink-0 border-b border-border bg-background px-4 py-2">
         <div className="flex items-center justify-between">
@@ -1483,6 +1573,24 @@ export default function Home() {
                   : "Exportar Maestra"}
               </span>
             </Button>
+
+            {/* Maestra AI Fix — only visible in maestra tab */}
+            {!isMagentoView && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowMaestraFixDialog(true)}
+                disabled={products.length === 0 || isGeneratingAi}
+                className="border-violet-300 text-violet-700 hover:bg-violet-50"
+              >
+                {isGeneratingAi ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Sparkles className="h-4 w-4" />
+                )}
+                <span className="ml-2">AI Fix</span>
+              </Button>
+            )}
 
             {activeMagentoView && (
               <Button

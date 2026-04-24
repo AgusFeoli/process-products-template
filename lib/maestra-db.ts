@@ -998,3 +998,101 @@ export async function cleanupOldAiJobs(): Promise<void> {
   // Remove jobs older than 24 hours
   await sql`DELETE FROM ai_jobs WHERE created_at < NOW() - INTERVAL '24 hours'`;
 }
+
+// ============================================
+// Maestra AI Fix — per-column correction config + bulk update
+// ============================================
+
+export interface MaestraFixColumnConfig {
+  dbColumn: string;
+  enabled: boolean;
+  prompt: string;
+}
+
+export interface MaestraFixConfig {
+  columns: MaestraFixColumnConfig[];
+}
+
+export async function getMaestraFixConfig(): Promise<MaestraFixConfig> {
+  const sql = getSql();
+  await ensureSettingsTable();
+  const rows = await sql`SELECT value FROM app_settings WHERE key = 'maestra_fix_config'`;
+  if (rows.length === 0) return { columns: [] };
+  try {
+    const parsed = JSON.parse(rows[0].value as string) as unknown;
+    if (!parsed || typeof parsed !== "object") return { columns: [] };
+    const obj = parsed as Record<string, unknown>;
+    if (!Array.isArray(obj.columns)) return { columns: [] };
+    return {
+      columns: (obj.columns as MaestraFixColumnConfig[]).map((c) => ({
+        dbColumn: String(c.dbColumn ?? ""),
+        enabled: Boolean(c.enabled),
+        prompt: typeof c.prompt === "string" ? c.prompt : "",
+      })).filter((c) => c.dbColumn),
+    };
+  } catch {
+    return { columns: [] };
+  }
+}
+
+export async function saveMaestraFixConfig(cfg: MaestraFixConfig): Promise<void> {
+  const sql = getSql();
+  await ensureSettingsTable();
+  const now = new Date().toISOString();
+  const value = JSON.stringify(cfg);
+  await sql`
+    INSERT INTO app_settings (key, value, updated_at)
+    VALUES ('maestra_fix_config', ${value}, ${now})
+    ON CONFLICT (key) DO UPDATE SET value = ${value}, updated_at = ${now}
+  `;
+}
+
+/**
+ * Bulk update maestra_products cells using _row_id (the DB id as a string).
+ * Only updates the provided dbColumns for each row.
+ */
+export async function bulkUpdateMaestraFieldsByRowId(
+  updates: { _row_id: string; fields: Record<string, string> }[],
+  dbColumns: string[]
+): Promise<number> {
+  if (updates.length === 0 || dbColumns.length === 0) return 0;
+  const sql = getSql();
+  const now = new Date().toISOString();
+  let updated = 0;
+
+  for (const row of updates) {
+    const rowId = row._row_id;
+    if (!rowId) continue;
+
+    const setClauses: string[] = [];
+    const params: (string | null)[] = [];
+    let paramIndex = 1;
+
+    for (const col of dbColumns) {
+      if (!(col in row.fields)) continue;
+      setClauses.push(`"${col}" = $${paramIndex}`);
+      const val = row.fields[col];
+      params.push(val != null ? String(val) : null);
+      paramIndex++;
+    }
+
+    if (setClauses.length === 0) continue;
+
+    setClauses.push(`"updated_at" = $${paramIndex}`);
+    params.push(now);
+    paramIndex++;
+
+    params.push(rowId);
+
+    const query = `UPDATE ${MAESTRA_TABLE} SET ${setClauses.join(", ")} WHERE "id"::text = $${paramIndex}`;
+
+    try {
+      await sql(query, params);
+      updated++;
+    } catch (err) {
+      console.error(`Failed to update maestra product with id ${rowId}:`, err);
+    }
+  }
+
+  return updated;
+}

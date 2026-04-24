@@ -22,13 +22,16 @@ import {
   saveMaestraIdentifierColumn,
   loadMagentoConfig,
   saveMagentoConfig,
+  getMaestraFixConfig,
+  saveMaestraFixConfig,
   type MaestraProduct,
   type MagentoProduct,
   type SeoKeyword,
   type ColumnMeta,
+  type MaestraFixConfig,
 } from "@/lib/maestra-db";
 import { manualDbColumn, type MagentoConfig } from "@/lib/magento-config";
-export type { MaestraProduct, MagentoProduct, SeoKeyword, ColumnMeta };
+export type { MaestraProduct, MagentoProduct, SeoKeyword, ColumnMeta, MaestraFixConfig };
 export type {
   MagentoConfig,
   MagentoViewConfig,
@@ -452,6 +455,34 @@ export async function resetSystemPrompt(): Promise<{
       success: false,
       prompt: getDefaultSystemPrompt(),
       error: error instanceof Error ? error.message : "Failed to reset prompt",
+    };
+  }
+}
+
+// ============================================
+// Maestra AI Fix config
+// ============================================
+
+export async function fetchMaestraFixConfig(): Promise<MaestraFixConfig> {
+  try {
+    return await getMaestraFixConfig();
+  } catch (error) {
+    console.error("Fetch maestra fix config error:", error);
+    return { columns: [] };
+  }
+}
+
+export async function saveMaestraFixConfigAction(
+  cfg: MaestraFixConfig
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    await saveMaestraFixConfig(cfg);
+    return { success: true };
+  } catch (error) {
+    console.error("Save maestra fix config error:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to save config",
     };
   }
 }
